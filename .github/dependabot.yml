@@ -1,0 +1,41 @@
+version: 2
+updates:
+- package-ecosystem: gomod
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "20:00"
+  open-pull-requests-limit: 10
+  ignore:
+  - dependency-name: github.com/uber/jaeger-client-go
+    versions:
+    - 2.25.0+incompatible
+    - 2.26.0+incompatible
+  - dependency-name: github.com/ethereum/go-ethereum
+    versions:
+    - 1.10.0
+    - 1.10.1
+    - 1.9.25
+  - dependency-name: github.com/sirupsen/logrus
+    versions:
+    - 1.7.0
+    - 1.7.1
+    - 1.8.0
+  - dependency-name: github.com/stretchr/testify
+    versions:
+    - 1.7.0
+  - dependency-name: github.com/prometheus/client_golang
+    versions:
+    - 1.9.0
+  - dependency-name: github.com/tyler-smith/go-bip39
+    versions:
+    - 1.1.0
+  - dependency-name: github.com/mattn/go-colorable
+    versions:
+    - 0.1.8
+  - dependency-name: github.com/uber/jaeger-lib
+    versions:
+    - 2.4.0+incompatible
+  - dependency-name: github.com/opentracing/opentracing-go
+    versions:
+    - 1.2.0
