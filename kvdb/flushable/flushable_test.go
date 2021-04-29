@@ -180,11 +180,11 @@ func TestFlushable(t *testing.T) {
 
 				var it ethdb.Iterator
 				if try%3 == 0 {
-					it = db.NewIterator()
+					it = db.NewIterator(nil, nil)
 				} else if try%3 == 1 {
-					it = db.NewIteratorWithPrefix(prefix)
+					it = db.NewIterator(prefix, nil)
 				} else {
-					it = db.NewIteratorWithStart(prefix)
+					it = db.NewIterator(nil, prefix)
 				}
 				defer it.Release()
 
@@ -303,7 +303,7 @@ func TestFlushableIterator(t *testing.T) {
 	flushable2.Put(veryFirstKey, []byte("first"))
 	flushable2.Put(veryLastKey, []byte("last"))
 
-	it := flushable1.NewIterator()
+	it := flushable1.NewIterator(nil, nil)
 	defer it.Release()
 
 	err := flushable2.Flush()

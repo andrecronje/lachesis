@@ -45,14 +45,14 @@ func testSim(t *testing.T, connect topology) {
 	network := lachesis.FakeNetConfig(genesis.FakeValidators(count, big.NewInt(0), pos.StakeToBalance(10000)))
 
 	// register a single gossip service
-	services := map[string]adapters.ServiceFunc{
-		"gossip": func(ctx *adapters.ServiceContext) (node.Service, error) {
-			g := NewIntegration(ctx, network)
+	services := adapters.LifecycleConstructors{
+		"gossip": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
+			g := NewIntegration(ctx, network, stack)
 			return g, nil
 		},
 	}
 	registerGossip.Do(func() {
-		adapters.RegisterServices(services)
+		adapters.RegisterLifecycles(services)
 	})
 
 	// create the NodeAdapter
@@ -74,7 +74,7 @@ func testSim(t *testing.T, connect topology) {
 			ID:         id,
 			Name:       fmt.Sprintf("Node-%d", i),
 			PrivateKey: key,
-			Services:   serviceNames(services),
+			Lifecycles: serviceNames(services),
 		}
 
 		_, err := sim.NewNodeWithConfig(config)
@@ -130,7 +130,7 @@ func topologyRing(net *simulations.Network, nodes []enode.ID) {
 	}
 }
 
-func serviceNames(services map[string]adapters.ServiceFunc) []string {
+func serviceNames(services adapters.LifecycleConstructors) []string {
 	names := make([]string, 0, len(services))
 	for name := range services {
 		names = append(names, name)

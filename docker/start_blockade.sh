@@ -6,21 +6,21 @@ cd $(dirname $0)
 CONF=blockade.yaml
 
 cat << HEADER > $CONF
-network:                                                                                                                                                                                                    
-  driver: udn                                                                                                                                                                                               
+network:
+  driver: udn
 
 containers:
 HEADER
 
 for ((i=$N-1;i>=0;i-=1))
 do
-    ACC=$(($i+1)) 
+    ACC=$(($i+1))
 
     cat << NODE >> $CONF
   node$i:
     image: lachesis:latest
     container_name: node$i
-    command: --fakenet=${ACC}/$N --rpc --rpcaddr="0.0.0.0" --rpcport=18545 --rpccorsdomain="*" --rpcapi="eth,admin,web3,txpool,ftm,sfc" --nousb --metrics
+    command: --fakenet=${ACC}/$N --http --http.addr="0.0.0.0" --http.port=18545 --http.corsdomain="*" --http.api="eth,admin,web3,txpool,ftm,sfc" --nousb --metrics
     expose:
       - "55555"
     deploy:

@@ -1,6 +1,10 @@
 package app
 
-import "github.com/Fantom-foundation/go-lachesis/inter/idx"
+import (
+	"math/big"
+
+	"github.com/Fantom-foundation/go-lachesis/inter/idx"
+)
 
 // SetSfcConstants stores SfcConstants
 func (s *Store) SetSfcConstants(epoch idx.Epoch, constants SfcConstants) {
@@ -21,7 +25,16 @@ func (s *Store) GetSfcConstants(epoch idx.Epoch) SfcConstants {
 	w, _ := s.get(s.table.SfcConstants, epoch.Bytes(), &SfcConstants{}).(*SfcConstants)
 
 	if w == nil {
-		w = &SfcConstants{}
+		w = &SfcConstants{
+			ShortGasPowerAllocPerSec: 0,
+			LongGasPowerAllocPerSec:  0,
+			BaseRewardPerSec:         new(big.Int),
+			OfflinePenaltyThreshold: BlocksMissed{
+				Num:    0,
+				Period: 0,
+			},
+			MinGasPrice: new(big.Int),
+		}
 	}
 
 	return *w

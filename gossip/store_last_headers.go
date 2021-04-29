@@ -19,7 +19,7 @@ func (s *Store) DelLastHeader(epoch idx.Epoch, creator idx.StakerID) {
 
 // DelLastHeaders deletes all the records about last headers
 func (s *Store) DelLastHeaders(epoch idx.Epoch) {
-	it := s.table.LastEpochHeaders.NewIteratorWithPrefix(epoch.Bytes())
+	it := s.table.LastEpochHeaders.NewIterator(epoch.Bytes(), nil)
 	defer it.Release()
 	s.dropTable(it, s.table.LastEpochHeaders)
 }
@@ -35,7 +35,7 @@ func (s *Store) AddLastHeader(epoch idx.Epoch, header *inter.EventHeaderData) {
 func (s *Store) GetLastHeaders(epoch idx.Epoch) inter.HeadersByCreator {
 	hh := make(inter.HeadersByCreator)
 
-	it := s.table.LastEpochHeaders.NewIteratorWithPrefix(epoch.Bytes())
+	it := s.table.LastEpochHeaders.NewIterator(epoch.Bytes(), nil)
 	defer it.Release()
 	for it.Next() {
 		creator := it.Key()[4:]

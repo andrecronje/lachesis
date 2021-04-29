@@ -1,12 +1,10 @@
 package gossip
 
 import (
-	"math/big"
-
+	"github.com/Fantom-foundation/go-lachesis/app"
 	"github.com/Fantom-foundation/go-lachesis/evmcore"
 	"github.com/Fantom-foundation/go-lachesis/gossip/gasprice"
 	"github.com/Fantom-foundation/go-lachesis/lachesis"
-	"github.com/Fantom-foundation/go-lachesis/lachesis/params"
 )
 
 type (
@@ -16,6 +14,11 @@ type (
 
 		LatencyImportance    int
 		ThroughputImportance int
+	}
+	// UpgradeConfig defines behaviour for network upgrades
+	UpgradeConfig struct {
+		ShutDownIfNotUpgraded bool // shut down the node in a case of non-supported network upgrade
+		WarningIfNotUpgraded  bool // show a warning in a case of non-supported network upgrade
 	}
 	// Config for the gossip service.
 	Config struct {
@@ -27,6 +30,8 @@ type (
 		TxIndex             bool // Whether to enable indexing transactions and receipts or not
 		DecisiveEventsIndex bool // Whether to enable indexing events which decide blocks or not
 		EventLocalTimeIndex bool // Whether to enable indexing arrival time of events or not
+
+		Upgrade UpgradeConfig
 
 		// Protocol options
 		Protocol ProtocolConfig
@@ -44,9 +49,15 @@ type (
 		EVMInterpreter string // TODO custom interpreter
 
 		// RPCGasCap is the global gas cap for eth-call variants.
-		RPCGasCap *big.Int `toml:",omitempty"`
+		RPCGasCap uint64 `toml:",omitempty"`
+
+		// RPCTxFeeCap is the global transaction fee(price * gaslimit) cap for
+		// send-transction variants. The unit is ether.
+		RPCTxFeeCap float64 `toml:",omitempty"`
 
 		ExtRPCEnabled bool
+
+		RPCLogsBloom bool
 	}
 
 	// StoreConfig is a config for store db.
@@ -69,8 +80,8 @@ type (
 		ReceiptsCacheSize int
 		// Cache size for Stakers.
 		StakersCacheSize int
-		// Cache size for Delegators.
-		DelegatorsCacheSize int
+		// Cache size for Delegations.
+		DelegationsCacheSize int
 	}
 )
 
@@ -81,6 +92,11 @@ func DefaultConfig(network lachesis.Config) Config {
 		Emitter:     DefaultEmitterConfig(),
 		TxPool:      evmcore.DefaultTxPoolConfig(),
 		StoreConfig: DefaultStoreConfig(),
+
+		Upgrade: UpgradeConfig{
+			ShutDownIfNotUpgraded: false,
+			WarningIfNotUpgraded:  true,
+		},
 
 		TxIndex:             true,
 		DecisiveEventsIndex: false,
@@ -93,8 +109,11 @@ func DefaultConfig(network lachesis.Config) Config {
 		GPO: gasprice.Config{
 			Blocks:     20,
 			Percentile: 60,
-			Default:    params.MinGasPrice,
+			MaxPrice:   gasprice.DefaultMaxPrice,
 		},
+		RPCGasCap:    25000000,
+		RPCTxFeeCap:  1000, // 1000 FTM
+		RPCLogsBloom: true,
 	}
 
 	if network.NetworkID == lachesis.FakeNetworkID {
@@ -115,12 +134,15 @@ func DefaultConfig(network lachesis.Config) Config {
 // DefaultStoreConfig for product.
 func DefaultStoreConfig() StoreConfig {
 	return StoreConfig{
-		EventsCacheSize:        500,
-		EventsHeadersCacheSize: 10000,
+		EventsCacheSize:        300,
+		EventsHeadersCacheSize: 1000,
 		BlockCacheSize:         100,
 		PackInfosCacheSize:     100,
 		TxPositionsCacheSize:   1000,
 		EpochStatsCacheSize:    100,
+		ReceiptsCacheSize:      app.DefaultStoreConfig().ReceiptsCacheSize,
+		StakersCacheSize:       app.DefaultStoreConfig().StakersCacheSize,
+		DelegationsCacheSize:   app.DefaultStoreConfig().DelegationsCacheSize,
 	}
 }
 
@@ -133,5 +155,8 @@ func LiteStoreConfig() StoreConfig {
 		PackInfosCacheSize:     100,
 		TxPositionsCacheSize:   100,
 		EpochStatsCacheSize:    100,
+		ReceiptsCacheSize:      app.LiteStoreConfig().ReceiptsCacheSize,
+		StakersCacheSize:       app.LiteStoreConfig().StakersCacheSize,
+		DelegationsCacheSize:   app.LiteStoreConfig().DelegationsCacheSize,
 	}
 }

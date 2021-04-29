@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 	"golang.org/x/crypto/sha3"
 
 	"github.com/Fantom-foundation/go-lachesis/hash"
@@ -18,7 +19,7 @@ import (
 
 var (
 	// EmptyTxHash is hash of empty transactions list. Used to check that event doesn't have transactions not having full event.
-	EmptyTxHash = types.DeriveSha(types.Transactions{})
+	EmptyTxHash = types.DeriveSha(types.Transactions{}, new(trie.Trie))
 )
 
 // EventHeaderData is the graph vertex in the Lachesis consensus algorithm
@@ -146,6 +147,16 @@ func (e *Event) Sign(signer func([]byte) ([]byte, error)) error {
 
 	e.Sig = sig
 	return nil
+}
+
+func (e *Event) RecoverPubkey() *ecdsa.PublicKey {
+	// NOTE: Keccak256 because of AccountManager
+	signedHash := crypto.Keccak256(e.DataToSign())
+	pk, err := crypto.SigToPub(signedHash, e.Sig)
+	if err != nil {
+		return nil
+	}
+	return pk
 }
 
 // VerifySignature checks the signature against e.Creator.

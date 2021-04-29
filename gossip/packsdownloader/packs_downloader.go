@@ -1,10 +1,11 @@
 package packsdownloader
 
 import (
+	"sync"
+
 	"github.com/Fantom-foundation/go-lachesis/gossip/fetcher"
 	"github.com/Fantom-foundation/go-lachesis/inter/idx"
 	"github.com/ethereum/go-ethereum/log"
-	"sync"
 )
 
 /*

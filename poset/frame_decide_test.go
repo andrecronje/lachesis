@@ -5,6 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/Fantom-foundation/go-lachesis/inter"
@@ -24,7 +25,7 @@ func TestConfirmBlockEvents(t *testing.T) {
 		blocks []*inter.Block
 	)
 	applyBlock := poset.callback.ApplyBlock
-	poset.callback.ApplyBlock = func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (common.Hash, bool) {
+	poset.callback.ApplyBlock = func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (common.Hash, bool, bool) {
 		frames = append(frames, poset.LastDecidedFrame)
 		blocks = append(blocks, block)
 
@@ -46,13 +47,13 @@ func TestConfirmBlockEvents(t *testing.T) {
 			if e.Seq%2 != 0 {
 				e.Transactions = append(e.Transactions, &types.Transaction{})
 			}
-			e.TxHash = types.DeriveSha(e.Transactions)
+			e.TxHash = types.DeriveSha(e.Transactions, new(trie.Trie))
 			return poset.Prepare(e)
 		},
 	})
 
 	// unconfirm all events
-	it := poset.store.table.ConfirmedEvent.NewIterator()
+	it := poset.store.table.ConfirmedEvent.NewIterator(nil, nil)
 	batch := poset.store.table.ConfirmedEvent.NewBatch()
 	for it.Next() {
 		assertar.NoError(batch.Delete(it.Key()))

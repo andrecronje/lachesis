@@ -2,11 +2,11 @@ package heavycheck
 
 import (
 	"errors"
-	"runtime"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/Fantom-foundation/go-lachesis/eventcheck/epochcheck"
 	"github.com/Fantom-foundation/go-lachesis/inter"
@@ -57,14 +57,7 @@ type TaskData struct {
 
 // NewDefault uses N-1 threads
 func NewDefault(config *lachesis.DagConfig, reader DagReader, txSigner types.Signer) *Checker {
-	threads := runtime.NumCPU()
-	if threads > 1 {
-		threads--
-	}
-	if threads < 1 {
-		threads = 1
-	}
-	return New(config, reader, txSigner, threads)
+	return New(config, reader, txSigner, 1)
 }
 
 // New validator which performs heavy checks, related to signatures validation and Merkle tree validation
@@ -139,7 +132,7 @@ func (v *Checker) Validate(e *inter.Event) error {
 		}
 	}
 	// Merkle tree
-	if e.TxHash != types.DeriveSha(e.Transactions) {
+	if e.TxHash != types.DeriveSha(e.Transactions, new(trie.Trie)) {
 		return ErrWrongTxHash
 	}
 

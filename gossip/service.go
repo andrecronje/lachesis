@@ -30,6 +30,7 @@ import (
 	"github.com/Fantom-foundation/go-lachesis/gossip/filters"
 	"github.com/Fantom-foundation/go-lachesis/gossip/gasprice"
 	"github.com/Fantom-foundation/go-lachesis/gossip/occuredtxs"
+	"github.com/Fantom-foundation/go-lachesis/gossip/upgnotifier"
 	"github.com/Fantom-foundation/go-lachesis/hash"
 	"github.com/Fantom-foundation/go-lachesis/inter"
 	"github.com/Fantom-foundation/go-lachesis/inter/idx"
@@ -85,13 +86,14 @@ type Service struct {
 	done chan struct{}
 
 	// server
-	Name  string
-	Topic discv5.Topic
+	p2pServer *p2p.Server
+	Name      string
+	Topic     discv5.Topic
 
 	serverPool *serverPool
 
 	// application
-	node                *node.ServiceContext
+	accountManager      *accounts.Manager
 	store               *Store
 	app                 *app.Store
 	engine              Consensus
@@ -102,6 +104,8 @@ type Service struct {
 	heavyCheckReader    HeavyCheckReader
 	gasPowerCheckReader GasPowerCheckReader
 	checkers            *eventcheck.Checkers
+	upgNotifier         *upgnotifier.Logger
+	lastBlockProcessed  time.Time
 
 	// global variables. TODO refactor to pass them as arguments if possible
 	blockParticipated map[idx.StakerID]bool // validators who participated in last block
@@ -115,10 +119,31 @@ type Service struct {
 	EthAPI        *EthAPIBackend
 	netRPCService *ethapi.PublicNetAPI
 
+	stopped   bool
+	migration bool
+
 	logger.Instance
 }
 
-func NewService(ctx *node.ServiceContext, config *Config, store *Store, engine Consensus, app *app.Store) (*Service, error) {
+func NewService(stack *node.Node, config *Config, store *Store, engine Consensus) (*Service, error) {
+	if config.TxPool.Journal != "" {
+		config.TxPool.Journal = stack.ResolvePath(config.TxPool.Journal)
+	}
+
+	svc, err := newService(config, store, engine)
+	if err != nil {
+		return nil, err
+	}
+
+	svc.accountManager = stack.AccountManager()
+	svc.p2pServer = stack.Server()
+	// Create the net API service
+	svc.netRPCService = ethapi.NewPublicNetAPI(svc.p2pServer, svc.config.Net.NetworkID)
+
+	return svc, err
+}
+
+func newService(config *Config, store *Store, engine Consensus) (*Service, error) {
 	svc := &Service{
 		config: config,
 
@@ -126,13 +151,14 @@ func NewService(ctx *node.ServiceContext, config *Config, store *Store, engine C
 
 		Name: fmt.Sprintf("Node-%d", rand.Int()),
 
-		node:  ctx,
-		store: store,
-		app:   app,
+		store:       store,
+		app:         store.app,
+		upgNotifier: upgnotifier.New(store),
 
-		engineMu:          new(sync.RWMutex),
-		occurredTxs:       occuredtxs.New(txsRingBufferSize, types.NewEIP155Signer(config.Net.EvmChainConfig().ChainID)),
-		blockParticipated: make(map[idx.StakerID]bool),
+		engineMu:           new(sync.RWMutex),
+		occurredTxs:        occuredtxs.New(txsRingBufferSize, types.NewEIP155Signer(config.Net.EvmChainConfig().ChainID)),
+		blockParticipated:  make(map[idx.StakerID]bool),
+		lastBlockProcessed: time.Now(),
 
 		Instance: logger.MakeInstance(),
 	}
@@ -149,15 +175,21 @@ func NewService(ctx *node.ServiceContext, config *Config, store *Store, engine C
 		IsEventAllowedIntoBlock: svc.isEventAllowedIntoBlock,
 	})
 
+	// find highest lamport
+	var highestLamport idx.Lamport
+	for _, id := range store.GetHeads(svc.engine.GetEpoch()) {
+		if highestLamport < id.Lamport() {
+			highestLamport = id.Lamport()
+		}
+	}
+	store.SetHighestLamport(highestLamport)
+
 	// create server pool
 	trustedNodes := []string{}
-	svc.serverPool = newServerPool(store.table.Peers, svc.done, &svc.wg, trustedNodes)
+	svc.serverPool = newServerPool(store.async.table.Peers, svc.done, &svc.wg, trustedNodes)
 
 	// create tx pool
 	stateReader := svc.GetEvmStateReader()
-	if config.TxPool.Journal != "" {
-		config.TxPool.Journal = ctx.ResolvePath(config.TxPool.Journal)
-	}
 	svc.txpool = evmcore.NewTxPool(config.TxPool, config.Net.EvmChainConfig(), stateReader)
 
 	// create checkers
@@ -167,13 +199,21 @@ func NewService(ctx *node.ServiceContext, config *Config, store *Store, engine C
 
 	// create protocol manager
 	var err error
-	svc.pm, err = NewProtocolManager(config, &svc.feed, svc.txpool, svc.engineMu, svc.checkers, store, svc.engine, svc.serverPool)
+	svc.pm, err = NewProtocolManager(config, &svc.feed, svc.txpool, svc.engineMu, svc.checkers, store, svc.engine, svc.serverPool, svc.IsMigration)
+	if err != nil {
+		return nil, err
+	}
 
 	// create API backend
 	svc.EthAPI = &EthAPIBackend{config.ExtRPCEnabled, svc, stateReader, nil}
 	svc.EthAPI.gpo = gasprice.NewOracle(svc.EthAPI, svc.config.GPO)
 
-	return svc, err
+	return svc, nil
+}
+
+// GetEngine returns service's engine
+func (s *Service) GetEngine() Consensus {
+	return s.engine
 }
 
 // makeCheckers builds event checkers
@@ -202,13 +242,15 @@ func (s *Service) makeEmitter() *Emitter {
 
 	return NewEmitter(&s.config.Net, &emitterCfg,
 		EmitterWorld{
-			Am:          s.AccountManager(),
-			Engine:      s.engine,
-			EngineMu:    s.engineMu,
 			Store:       s.store,
 			App:         s.app,
+			Engine:      s.engine,
+			EngineMu:    s.engineMu,
 			Txpool:      s.txpool,
+			Am:          s.AccountManager(),
 			OccurredTxs: s.occurredTxs,
+			Checkers:    s.checkers,
+			MinGasPrice: s.MinGasPrice,
 			OnEmitted: func(emitted *inter.Event) {
 				// s.engineMu is locked here
 
@@ -225,9 +267,13 @@ func (s *Service) makeEmitter() *Emitter {
 			IsSynced: func() bool {
 				return atomic.LoadUint32(&s.pm.synced) != 0
 			},
+			LastBlockProcessed: func() time.Time {
+				return s.lastBlockProcessed
+			},
 			PeersNum: func() int {
 				return s.pm.peers.Len()
 			},
+			IsMigration: s.IsMigration,
 			AddVersion: func(e *inter.Event) *inter.Event {
 				// serialization version
 				e.Version = 0
@@ -241,7 +287,6 @@ func (s *Service) makeEmitter() *Emitter {
 
 				return e
 			},
-			Checkers: s.checkers,
 		},
 	)
 }
@@ -283,36 +328,47 @@ func (s *Service) APIs() []rpc.API {
 }
 
 // Start method invoked when the node is ready to start the service.
-func (s *Service) Start(srv *p2p.Server) error {
-	// Start the RPC service
-	s.netRPCService = ethapi.NewPublicNetAPI(srv, s.config.Net.NetworkID)
-
+func (s *Service) Start() error {
 	var genesis common.Hash
 	genesis = s.engine.GetGenesisHash()
 	s.Topic = discv5.Topic("lachesis@" + genesis.Hex())
 
-	if srv.DiscV5 != nil {
+	if s.p2pServer.DiscV5 != nil {
 		go func(topic discv5.Topic) {
 			s.Log.Info("Starting topic registration")
 			defer s.Log.Info("Terminated topic registration")
 
-			srv.DiscV5.RegisterTopic(topic, s.done)
+			s.p2pServer.DiscV5.RegisterTopic(topic, s.done)
 		}(s.Topic)
 	}
 
-	s.pm.Start(srv.MaxPeers)
+	s.pm.Start(s.p2pServer.MaxPeers)
 
-	s.serverPool.start(srv, s.Topic)
+	s.serverPool.start(s.p2pServer, s.Topic)
 
 	s.emitter = s.makeEmitter()
 	s.emitter.SetValidator(s.config.Emitter.Validator)
 	s.emitter.StartEventEmission()
+	if s.config.Upgrade.WarningIfNotUpgraded {
+		s.upgNotifier.Start()
+	}
 
 	return nil
 }
 
+func (s *Service) IsMigration() bool {
+	return s.migration
+}
+
+func (s *Service) Emitter() *Emitter {
+	return s.emitter
+}
+
 // Stop method invoked when the node terminates the service.
 func (s *Service) Stop() error {
+	if s.config.Upgrade.WarningIfNotUpgraded {
+		s.upgNotifier.Stop()
+	}
 	close(s.done)
 	s.emitter.StopEventEmission()
 	s.pm.Stop()
@@ -322,15 +378,12 @@ func (s *Service) Stop() error {
 	// flush the state at exit, after all the routines stopped
 	s.engineMu.Lock()
 	defer s.engineMu.Unlock()
+	s.stopped = true
 
-	err := s.app.Commit(nil, true)
-	if err != nil {
-		return err
-	}
 	return s.store.Commit(nil, true)
 }
 
 // AccountManager return node's account manager
 func (s *Service) AccountManager() *accounts.Manager {
-	return s.node.AccountManager
+	return s.accountManager
 }

@@ -12,7 +12,7 @@ import (
 func Check() {
 	locked, reason, eLockPath, _ := read(datadir)
 	if locked {
-		utils.Fatalf("Node isn't allowed to start due to a previous error. Please fix the issue and then delete file \"%s\". Error message:\n%s", eLockPath, reason)
+		utils.Fatalf("Node isn't allowed to start due to a previous error. Please fix the issue and then delete file \"%s\".\nError message:\n%s", eLockPath, reason)
 	}
 }
 
@@ -28,7 +28,7 @@ func SetDefaultDatadir(dir string) {
 // Permanent error
 func Permanent(err error) {
 	eLockPath, _ := write(datadir, err.Error())
-	utils.Fatalf("Node is permanently stopping due to an issue. Please fix the issue and then delete file \"%s\". Error message:\n%s", eLockPath, err.Error())
+	utils.Fatalf("Node is stopping due to an issue. Please fix the issue and then delete file \"%s\".\nError message:\n%s", eLockPath, err.Error())
 }
 
 // read errlock file

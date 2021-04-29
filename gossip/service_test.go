@@ -8,8 +8,8 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
-func getProtocol(svc node.Service, name string, version uint) *p2p.Protocol {
-	for _, p := range svc.Protocols() {
+func getProtocol(stack *node.Node, name string, version uint) *p2p.Protocol {
+	for _, p := range stack.Server().Protocols {
 		if p.Name == name && p.Version == version {
 			return &p
 		}

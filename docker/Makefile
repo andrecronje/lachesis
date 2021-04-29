@@ -19,5 +19,15 @@ tx-storm:
 	    --build-arg GOPROXY=$(GOPROXY) \
 	    -f docker/Dockerfile.tx-storm -t "tx-storm:$(TAG)" .
 
+
+.PHONY: snapshots
+snapshots:
+	cd ../ && \
+	docker build \
+	    --network=host \
+	    --build-arg GOPROXY=$(GOPROXY) \
+	    -f docker/Dockerfile.snapshots -t "lachesis-snapshots:$(TAG)" .
+
+
 test_accs.json:
 	./_test_accs.sh

@@ -83,14 +83,14 @@ func FakePoset(namespace string, nodes []idx.StakerID, mods ...memorydb.Mod) (*E
 	}
 
 	extended.Bootstrap(inter.ConsensusCallbacks{
-		ApplyBlock: func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (newAppHash common.Hash, sealEpoch bool) {
+		ApplyBlock: func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (newAppHash common.Hash, sealEpoch, skip bool) {
 			// track block events
 			if extended.blocks[block.Index] != nil {
 				extended.Log.Crit("Created block twice")
 			}
 			extended.blocks[block.Index] = block
 
-			return common.Hash{}, false
+			return common.Hash{}, false, false
 		},
 	})
 

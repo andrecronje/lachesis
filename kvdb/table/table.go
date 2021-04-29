@@ -1,8 +1,6 @@
 package table
 
 import (
-	"bytes"
-
 	"github.com/ethereum/go-ethereum/ethdb"
 )
 
@@ -41,8 +39,8 @@ func New(db ethdb.KeyValueStore, prefix []byte) *Table {
 	return &Table{db, prefix}
 }
 
-func (t Table) NewTable(prefix []byte) *Table {
-	return &Table{t.db, prefix}
+func (t *Table) NewTable(prefix []byte) *Table {
+	return New(t, prefix)
 }
 
 func (t *Table) Close() error {
@@ -90,11 +88,7 @@ type iterator struct {
 }
 
 func (it *iterator) Next() bool {
-	next := it.it.Next()
-	for next && !bytes.HasPrefix(it.it.Key(), it.prefix) {
-		next = it.it.Next()
-	}
-	return next
+	return it.it.Next()
 }
 
 func (it *iterator) Error() error {
@@ -114,16 +108,8 @@ func (it *iterator) Release() {
 	*it = iterator{}
 }
 
-func (t *Table) NewIterator() ethdb.Iterator {
-	return &iterator{t.db.NewIteratorWithPrefix(t.prefix), t.prefix}
-}
-
-func (t *Table) NewIteratorWithStart(start []byte) ethdb.Iterator {
-	return &iterator{t.db.NewIteratorWithStart(prefixed(start, t.prefix)), t.prefix}
-}
-
-func (t *Table) NewIteratorWithPrefix(itPrefix []byte) ethdb.Iterator {
-	return &iterator{t.db.NewIteratorWithPrefix(prefixed(itPrefix, t.prefix)), t.prefix}
+func (t *Table) NewIterator(itPrefix []byte, start []byte) ethdb.Iterator {
+	return &iterator{t.db.NewIterator(prefixed(itPrefix, t.prefix), start), t.prefix}
 }
 
 /*

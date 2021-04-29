@@ -64,7 +64,7 @@ func TestMemoryDBIterator(t *testing.T) {
 			}
 		}
 		// Iterate over the database with the given configs and verify the results
-		it, idx := db.NewIteratorWithPrefix([]byte(tt.prefix)), 0
+		it, idx := db.NewIterator([]byte(tt.prefix), nil), 0
 		for it.Next() {
 			if !bytes.Equal(it.Key(), []byte(tt.order[idx])) {
 				t.Errorf("test %d: item %d: key mismatch: have %s, want %s", i, idx, string(it.Key()), tt.order[idx])

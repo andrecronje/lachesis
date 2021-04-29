@@ -1,7 +1,7 @@
 package ordering
 
 import (
-	"github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru"
 
 	"github.com/Fantom-foundation/go-lachesis/eventcheck"
 	"github.com/Fantom-foundation/go-lachesis/hash"
@@ -29,6 +29,7 @@ type (
 type EventBuffer struct {
 	incompletes *lru.Cache // event hash -> event
 	callback    Callback
+	buffSize    int
 }
 
 func New(buffSize int, callback Callback) *EventBuffer {
@@ -36,6 +37,7 @@ func New(buffSize int, callback Callback) *EventBuffer {
 	return &EventBuffer{
 		incompletes: incompletes,
 		callback:    callback,
+		buffSize:    buffSize,
 	}
 }
 
@@ -45,10 +47,16 @@ func (buf *EventBuffer) PushEvent(e *inter.Event, peer string) {
 		peer:  peer,
 	}
 
-	buf.pushEvent(w, buf.getIncompleteEventsList(), true)
+	buf.pushEvent(w, nil, true)
 }
 
 func (buf *EventBuffer) getIncompleteEventsList() []*event {
+	if buf.incompletes.Len() == buf.buffSize {
+		for buf.incompletes.Len() > buf.buffSize/4 {
+			buf.incompletes.RemoveOldest()
+		}
+		buf.incompletes.Purge()
+	}
 	res := make([]*event, 0, buf.incompletes.Len())
 	for _, childID := range buf.incompletes.Keys() {
 		child, _ := buf.incompletes.Peek(childID)
@@ -99,6 +107,9 @@ func (buf *EventBuffer) pushEvent(e *event, incompleteEventsList []*event, stric
 	// now child events may become complete, check it again
 	eHash := e.Hash()
 	buf.incompletes.Remove(eHash)
+	if incompleteEventsList == nil {
+		incompleteEventsList = buf.getIncompleteEventsList()
+	}
 	for _, child := range incompleteEventsList {
 		for _, parent := range child.Parents {
 			if parent == eHash {

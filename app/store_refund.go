@@ -33,7 +33,7 @@ func (s *Store) GetGasPowerRefund(epoch idx.Epoch, stakerID idx.StakerID) uint64
 func (s *Store) GetGasPowerRefunds(epoch idx.Epoch) map[idx.StakerID]uint64 {
 	rr := make(map[idx.StakerID]uint64)
 
-	it := s.table.GasPowerRefund.NewIteratorWithPrefix(epoch.Bytes())
+	it := s.table.GasPowerRefund.NewIterator(epoch.Bytes(), nil)
 	defer it.Release()
 	for it.Next() {
 		creator := idx.BytesToStakerID(it.Key()[4:])
@@ -56,7 +56,7 @@ func (s *Store) IncGasPowerRefund(epoch idx.Epoch, stakerID idx.StakerID, diff u
 
 // DelGasPowerRefunds erases all record on epoch
 func (s *Store) DelGasPowerRefunds(epoch idx.Epoch) {
-	it := s.table.GasPowerRefund.NewIteratorWithPrefix(epoch.Bytes())
+	it := s.table.GasPowerRefund.NewIterator(epoch.Bytes(), nil)
 	defer it.Release()
 	s.dropTable(it, s.table.GasPowerRefund)
 }

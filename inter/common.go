@@ -22,7 +22,7 @@ func GenNodes(
 	for i := 0; i < nodeCount; i++ {
 		addr := hash.FakePeer()
 		nodes[i] = addr
-		hash.SetNodeName(addr, "node"+string('A'+i))
+		hash.SetNodeName(addr, "node"+string(rune('A'+i)))
 	}
 
 	return
@@ -114,7 +114,7 @@ func ForEachRandFork(
 				}
 			}
 		}
-		name := fmt.Sprintf("%s%03d", string('a'+self), len(events[creator]))
+		name := fmt.Sprintf("%s%03d", string(rune('a'+self)), len(events[creator]))
 		// buildEvent callback
 		if callback.Build != nil {
 			e = callback.Build(e, name)
@@ -126,7 +126,7 @@ func ForEachRandFork(
 		e.RecacheHash()
 		e.RecacheSize()
 		// save and name event
-		hash.SetEventName(e.Hash(), fmt.Sprintf("%s%03d", string('a'+self), len(events[creator])))
+		hash.SetEventName(e.Hash(), fmt.Sprintf("%s%03d", string(rune('a'+self)), len(events[creator])))
 		events[creator] = append(events[creator], e)
 		// callback
 		if callback.Process != nil {

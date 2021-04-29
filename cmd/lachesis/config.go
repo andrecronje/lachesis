@@ -4,17 +4,19 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
-	"unicode"
 
+	"github.com/Fantom-foundation/go-opera/cmd/opera/launcher"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/naoina/toml"
 	"gopkg.in/urfave/cli.v1"
@@ -37,15 +39,13 @@ var (
 	}
 
 	configFileFlag = cli.StringFlag{
-		Name:  "config",
-		Usage: "TOML configuration file",
+		Name:  "legacy_config",
+		Usage: "Lachesis TOML configuration file",
 	}
 
-	// GpoDefaultFlag defines a starting gas price for the oracle (GPO)
-	GpoDefaultFlag = utils.BigFlag{
-		Name:  "gpofloor",
-		Usage: "The default suggested gas price",
-		Value: big.NewInt(params.GWei),
+	operaConfigFileFlag = cli.StringFlag{
+		Name:  "config",
+		Usage: "Opera TOML configuration file",
 	}
 
 	// DataDirFlag defines directory to store Lachesis state and user's wallets
@@ -65,11 +65,7 @@ var tomlSettings = toml.Config{
 		return field
 	},
 	MissingField: func(rt reflect.Type, field string) error {
-		link := ""
-		if unicode.IsUpper(rune(rt.Name()[0])) && rt.PkgPath() != "main" {
-			link = fmt.Sprintf(", see https://godoc.org/%s#%s for available fields", rt.PkgPath(), rt.Name())
-		}
-		return fmt.Errorf("field '%s' is not defined in %s%s", field, rt.String(), link)
+		return fmt.Errorf("field '%s' is not defined in %s", field, rt.String())
 	},
 }
 
@@ -90,6 +86,11 @@ func loadAllConfigs(file string, cfg *config) error {
 	if _, ok := err.(*toml.LineError); ok {
 		err = errors.New(file + ", " + err.Error())
 	}
+	if err != nil {
+		return errors.New(fmt.Sprintf("TOML config file error: %v.\n"+
+			"Use 'dumpconfig' command to get an example config file.\n"+
+			"If node was recently upgraded and a previous network config file is used, then check updates for the config file.", err))
+	}
 	return err
 }
 
@@ -103,13 +104,26 @@ func defaultLachesisConfig(ctx *cli.Context) lachesis.Config {
 			log.Crit("Invalid flag", "flag", FakeNetFlag.Name, "err", err)
 		}
 		cfg = lachesis.FakeNetConfig(accs)
-	case ctx.GlobalBool(utils.TestnetFlag.Name):
+	case ctx.GlobalBool(utils.LegacyTestnetFlag.Name):
 		cfg = lachesis.TestNetConfig()
 	default:
 		cfg = lachesis.MainNetConfig()
 	}
 
 	return cfg
+}
+
+func setBootnodes(ctx *cli.Context, urls []string, cfg *node.Config) {
+	for _, url := range urls {
+		if url != "" {
+			node, err := discv5.ParseNode(url)
+			if err != nil {
+				log.Error("Bootstrap URL invalid", "enode", url, "err", err)
+				continue
+			}
+			cfg.P2P.BootstrapNodesV5 = append(cfg.P2P.BootstrapNodesV5, node)
+		}
+	}
 }
 
 func setDataDir(ctx *cli.Context, cfg *node.Config) {
@@ -124,7 +138,7 @@ func setDataDir(ctx *cli.Context, cfg *node.Config) {
 			log.Crit("Invalid flag", "flag", FakeNetFlag.Name, "err", err)
 		}
 		cfg.DataDir = filepath.Join(defaultDataDir, fmt.Sprintf("fakenet-%d", len(accs.Accounts)))
-	case ctx.GlobalBool(utils.TestnetFlag.Name):
+	case ctx.GlobalBool(utils.LegacyTestnetFlag.Name):
 		cfg.DataDir = filepath.Join(defaultDataDir, "testnet")
 	default:
 		cfg.DataDir = defaultDataDir
@@ -132,14 +146,17 @@ func setDataDir(ctx *cli.Context, cfg *node.Config) {
 }
 
 func setGPO(ctx *cli.Context, cfg *gasprice.Config) {
+	if ctx.GlobalIsSet(utils.LegacyGpoBlocksFlag.Name) {
+		cfg.Blocks = ctx.GlobalInt(utils.LegacyGpoBlocksFlag.Name)
+	}
 	if ctx.GlobalIsSet(utils.GpoBlocksFlag.Name) {
 		cfg.Blocks = ctx.GlobalInt(utils.GpoBlocksFlag.Name)
 	}
+	if ctx.GlobalIsSet(utils.LegacyGpoPercentileFlag.Name) {
+		cfg.Percentile = ctx.GlobalInt(utils.LegacyGpoPercentileFlag.Name)
+	}
 	if ctx.GlobalIsSet(utils.GpoPercentileFlag.Name) {
 		cfg.Percentile = ctx.GlobalInt(utils.GpoPercentileFlag.Name)
-	}
-	if ctx.GlobalIsSet(GpoDefaultFlag.Name) {
-		cfg.Default = utils.GlobalBig(ctx, GpoDefaultFlag.Name)
 	}
 }
 
@@ -190,7 +207,7 @@ func gossipConfigWithFlags(ctx *cli.Context, src gossip.Config) gossip.Config {
 	cfg := src
 
 	// Avoid conflicting network flags
-	utils.CheckExclusive(ctx, FakeNetFlag, utils.DeveloperFlag, utils.TestnetFlag)
+	utils.CheckExclusive(ctx, FakeNetFlag, utils.DeveloperFlag, utils.LegacyTestnetFlag)
 	utils.CheckExclusive(ctx, FakeNetFlag, utils.DeveloperFlag, utils.ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
 
 	setGPO(ctx, &cfg.GPO)
@@ -222,7 +239,10 @@ func gossipConfigWithFlags(ctx *cli.Context, src gossip.Config) gossip.Config {
 		cfg.EVMInterpreter = ctx.GlobalString(utils.EVMInterpreterFlag.Name)
 	}
 	if ctx.GlobalIsSet(utils.RPCGlobalGasCap.Name) {
-		cfg.RPCGasCap = new(big.Int).SetUint64(ctx.GlobalUint64(utils.RPCGlobalGasCap.Name))
+		cfg.RPCGasCap = ctx.GlobalUint64(utils.RPCGlobalGasCap.Name)
+	}
+	if ctx.GlobalIsSet(utils.RPCGlobalTxFeeCap.Name) {
+		cfg.RPCTxFeeCap = ctx.GlobalFloat64(utils.RPCGlobalTxFeeCap.Name)
 	}
 
 	return cfg
@@ -230,11 +250,15 @@ func gossipConfigWithFlags(ctx *cli.Context, src gossip.Config) gossip.Config {
 
 func nodeConfigWithFlags(ctx *cli.Context, cfg node.Config) node.Config {
 	utils.SetNodeConfig(ctx, &cfg)
+
+	if !ctx.GlobalIsSet(FakeNetFlag.Name) {
+		setBootnodes(ctx, Bootnodes, &cfg)
+	}
 	setDataDir(ctx, &cfg)
 	return cfg
 }
 
-func makeAllConfigs(ctx *cli.Context) config {
+func makeAllConfigs(ctx *cli.Context) *config {
 	// Defaults (low priority)
 	net := defaultLachesisConfig(ctx)
 	cfg := config{Lachesis: gossip.DefaultConfig(net), Node: defaultNodeConfig()}
@@ -250,7 +274,7 @@ func makeAllConfigs(ctx *cli.Context) config {
 	cfg.Lachesis = gossipConfigWithFlags(ctx, cfg.Lachesis)
 	cfg.Node = nodeConfigWithFlags(ctx, cfg.Node)
 
-	return cfg
+	return &cfg
 }
 
 func defaultNodeConfig() node.Config {
@@ -274,6 +298,8 @@ func dumpConfig(ctx *cli.Context) error {
 		return err
 	}
 
+	log.Info("Dumping legacy Lachesis config file")
+
 	dump := os.Stdout
 	if ctx.NArg() > 0 {
 		dump, err = os.OpenFile(ctx.Args().Get(0), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -285,5 +311,15 @@ func dumpConfig(ctx *cli.Context) error {
 	dump.WriteString(comment)
 	dump.Write(out)
 
-	return nil
+	log.Info("Dumping Opera config file")
+
+	operaDatadir := path.Join(cfg.Node.DataDir, "opera")
+	operaArgs := excludeArg(os.Args, "--"+validatorFlag.Name, true)
+	operaArgs = excludeArg(operaArgs, "--"+configFileFlag.Name, true)
+	operaArgs = excludeArg(operaArgs, "--"+DataDirFlag.Name, true)
+	operaArgs = addFrontArgs(operaArgs, []string{"--" + DataDirFlag.Name, operaDatadir})
+	operaArgs = excludeArg(operaArgs, "--"+utils.LegacyTestnetFlag.Name, false)
+
+	metrics.Enabled = false
+	return launcher.Launch(operaArgs)
 }

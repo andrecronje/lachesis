@@ -156,26 +156,25 @@ func (db *Database) NewBatch() ethdb.Batch {
 	}
 }
 
-// NewIterator creates a binary-alphabetical iterator over the entire keyspace
-// contained within the memory database.
-func (db *Database) NewIterator() ethdb.Iterator {
-	return db.NewIteratorWithStart(nil)
-}
-
-// NewIteratorWithStart creates a binary-alphabetical iterator over a subset of
-// database content starting at a particular initial key (or after, if it does
-// not exist).
-func (db *Database) NewIteratorWithStart(start []byte) ethdb.Iterator {
+// NewIterator creates a binary-alphabetical iterator over a subset
+// of database content with a particular key prefix, starting at a particular
+// initial key (or after, if it does not exist).
+func (db *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	var (
-		st     = string(start)
+		pr     = string(prefix)
+		st     = string(append(prefix, start...))
 		keys   = make([]string, 0, len(db.db))
 		values = make([][]byte, 0, len(db.db))
 	)
-	// Collect the keys from the memory database corresponding to the given start
+	// Collect the keys from the memory database corresponding to the given prefix
+	// and start
 	for key := range db.db {
+		if !strings.HasPrefix(key, pr) {
+			continue
+		}
 		if key >= st {
 			keys = append(keys, key)
 		}
@@ -188,36 +187,6 @@ func (db *Database) NewIteratorWithStart(start []byte) ethdb.Iterator {
 	return &iterator{
 		keys:   keys,
 		values: values,
-		lag:    db.lag,
-	}
-}
-
-// NewIteratorWithPrefix creates a binary-alphabetical iterator over a subset
-// of database content with a particular key prefix.
-func (db *Database) NewIteratorWithPrefix(prefix []byte) ethdb.Iterator {
-	db.lock.RLock()
-	defer db.lock.RUnlock()
-
-	var (
-		pr     = string(prefix)
-		keys   = make([]string, 0, len(db.db))
-		values = make([][]byte, 0, len(db.db))
-	)
-	// Collect the keys from the memory database corresponding to the given prefix
-	for key := range db.db {
-		if strings.HasPrefix(key, pr) {
-			keys = append(keys, key)
-		}
-	}
-	// Sort the items and retrieve the associated values
-	sort.Strings(keys)
-	for _, key := range keys {
-		values = append(values, db.db[key])
-	}
-	return &iterator{
-		keys:   keys,
-		values: values,
-		lag:    db.lag,
 	}
 }
 
@@ -321,17 +290,11 @@ type iterator struct {
 	inited bool
 	keys   []string
 	values [][]byte
-
-	lag time.Duration
 }
 
 // Next moves the iterator to the next key/value pair. It returns whether the
 // iterator is exhausted.
 func (it *iterator) Next() bool {
-	if it.lag != 0 {
-		time.Sleep(it.lag)
-	}
-
 	// If the iterator was not yet initialized, do it now
 	if !it.inited {
 		it.inited = true

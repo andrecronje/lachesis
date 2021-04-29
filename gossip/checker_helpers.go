@@ -1,6 +1,7 @@
 package gossip
 
 import (
+	"math/big"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -105,4 +106,12 @@ func ReadEpochPubKeys(a *app.Store, epoch idx.Epoch) *ValidatorsPubKeys {
 		Epoch:     epoch,
 		Addresses: addrs,
 	}
+}
+
+func (s *Service) MinGasPrice() *big.Int {
+	sfcConstants := s.store.app.GetSfcConstants(s.engine.GetEpoch() - 1)
+	if sfcConstants.MinGasPrice == nil || sfcConstants.MinGasPrice.Sign() == 0 {
+		return s.config.Net.Economy.InitialMinGasPrice
+	}
+	return sfcConstants.MinGasPrice
 }

@@ -47,9 +47,9 @@ func DefaultEmitterConfig() EmitterConfig {
 		VersionToPublish: _params.VersionWithMeta(),
 
 		EmitIntervals: EmitIntervals{
-			Min:                200 * time.Millisecond,
+			Min:                400 * time.Millisecond,
 			Max:                12 * time.Minute,
-			Confirming:         200 * time.Millisecond,
+			Confirming:         500 * time.Millisecond,
 			SelfForkProtection: 30 * time.Minute, // should be at least 2x of MaxEmitInterval
 		},
 

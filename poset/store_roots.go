@@ -61,7 +61,7 @@ func (s *Store) GetFrameRoots(f idx.Frame) []election.RootAndSlot {
 	}
 	rr := make([]election.RootAndSlot, 0, 200)
 
-	it := s.epochTable.Roots.NewIteratorWithPrefix(f.Bytes())
+	it := s.epochTable.Roots.NewIterator(f.Bytes(), nil)
 	defer it.Release()
 	for it.Next() {
 		key := it.Key()

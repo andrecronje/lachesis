@@ -35,8 +35,8 @@ do
    ${REGISTRY_HOST}/lachesis:${TAG} --nousb \
     --fakenet=$ACC/$N,/tmp/test_accs.json \
     --port=${PORT} --nat="extip:${SWARM_HOST}" \
-    --rpc --rpcaddr="0.0.0.0" --rpcport=${RPCP} --rpcvhosts="*" --rpccorsdomain="*" --rpcapi="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
-    --ws --wsaddr="0.0.0.0" --wsport=${WSP} --wsorigins="*" --wsapi="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
+    --http --http.addr="0.0.0.0" --http.port=${RPCP} --http.vhosts="*" --http.corsdomain="*" --http.api="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
+    --ws --ws.addr="0.0.0.0" --ws.port=${WSP} --ws.origins="*" --ws.api="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
     --verbosity=3 --metrics --tracing \
     ${bootnode}
 

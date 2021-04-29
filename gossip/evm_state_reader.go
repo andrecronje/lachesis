@@ -1,6 +1,8 @@
 package gossip
 
 import (
+	"github.com/Fantom-foundation/go-lachesis/inter"
+	"math/big"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,8 +18,9 @@ import (
 
 type EvmStateReader struct {
 	*ServiceFeed
-	engineMu *sync.RWMutex
-	engine   Consensus
+	engineMu    *sync.RWMutex
+	engine      Consensus
+	minGasPrice func() *big.Int
 
 	store *Store
 	app   *app.Store
@@ -28,9 +31,14 @@ func (s *Service) GetEvmStateReader() *EvmStateReader {
 		ServiceFeed: &s.feed,
 		engineMu:    s.engineMu,
 		engine:      s.engine,
+		minGasPrice: s.MinGasPrice,
 		store:       s.store,
 		app:         s.app,
 	}
+}
+
+func (r *EvmStateReader) MinGasPrice() *big.Int {
+	return r.minGasPrice()
 }
 
 func (r *EvmStateReader) CurrentBlock() *evmcore.EvmBlock {
@@ -74,28 +82,7 @@ func (r *EvmStateReader) getBlock(h hash.Event, n idx.Block, readTxs bool) *evmc
 		return nil
 	}
 
-	transactions := make(types.Transactions, 0, len(block.Events)*10)
-	if readTxs {
-		txCount := uint(0)
-		skipCount := 0
-		for _, id := range block.Events {
-			e := r.store.GetEvent(id)
-			if e == nil {
-				log.Crit("Event not found", "event", id.String())
-				continue
-			}
-
-			// appends txs except skipped ones
-			for _, tx := range e.Transactions {
-				if skipCount < len(block.SkippedTxs) && block.SkippedTxs[skipCount] == txCount {
-					skipCount++
-				} else {
-					transactions = append(transactions, tx)
-				}
-				txCount++
-			}
-		}
-	}
+	transactions := r.store.GetBlockTransactions(block)
 
 	evmHeader := evmcore.ToEvmHeader(block)
 	evmBlock := &evmcore.EvmBlock{
@@ -111,6 +98,33 @@ func (r *EvmStateReader) getBlock(h hash.Event, n idx.Block, readTxs bool) *evmc
 	return evmBlock
 }
 
+func (s *Store) GetBlockTransactions(block *inter.Block) types.Transactions {
+	transactions := make(types.Transactions, 0, len(block.Events)*10)
+	txCount := uint(0)
+	skipCount := 0
+	if block.Index == 0 {
+		return transactions
+	}
+	for _, id := range block.Events {
+		e := s.GetEvent(id)
+		if e == nil {
+			log.Crit("Event not found", "event", id.String())
+			continue
+		}
+
+		// appends txs except skipped ones
+		for _, tx := range e.Transactions {
+			if skipCount < len(block.SkippedTxs) && block.SkippedTxs[skipCount] == txCount {
+				skipCount++
+			} else {
+				transactions = append(transactions, tx)
+			}
+			txCount++
+		}
+	}
+	return transactions
+}
+
 func (r *EvmStateReader) StateAt(root common.Hash) (*state.StateDB, error) {
-	return r.app.StateDB(root), nil
+	return r.app.StateDB(root)
 }

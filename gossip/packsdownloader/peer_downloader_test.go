@@ -2,11 +2,12 @@ package packsdownloader
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/Fantom-foundation/go-lachesis/hash"
 	"github.com/Fantom-foundation/go-lachesis/inter"
 	"github.com/Fantom-foundation/go-lachesis/inter/idx"
 	"github.com/stretchr/testify/assert"
-	"testing"
 
 	tree "github.com/emirpasic/gods/maps/treemap"
 )

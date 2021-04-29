@@ -24,8 +24,9 @@ do
 	lachesis:${TAG} \
 	--fakenet=${ACC}/$N,/tmp/test_accs.json \
 	--port=5050 \
-	--rpc --rpcaddr="0.0.0.0" --rpcport=18545 --rpcvhosts="*" --rpccorsdomain="*" --rpcapi="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
-	--ws --wsaddr="0.0.0.0" --wsport=18546 --wsorigins="*" --wsapi="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
+	--password /tmp/fakepassword \
+	--http --http.addr="0.0.0.0" --http.port=18545 --http.vhosts="*" --http.corsdomain="*" --http.api="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
+	--ws --ws.addr="0.0.0.0" --ws.port=18546 --ws.origins="*" --ws.api="eth,debug,admin,web3,personal,net,txpool,ftm,sfc" \
 	--nousb --verbosity=3 --metrics \
 	${SENTRY_DSN}
 done

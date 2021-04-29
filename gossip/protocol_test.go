@@ -33,6 +33,7 @@ func testStatusMsgErrors(t *testing.T, protocol int) {
 		genesis   = pm.engine.GetGenesisHash()
 		networkID = lachesis.FakeNetworkID
 	)
+	pm.downloader.Terminate() // disable downloader so test would be deterministic
 	defer pm.Stop()
 
 	tests := []struct {
@@ -67,12 +68,12 @@ func testStatusMsgErrors(t *testing.T, protocol int) {
 		select {
 		case err := <-errc:
 			if err == nil {
-				t.Errorf("test %d: protocol returned nil error, want %q", i, test.wantError)
+				t.Fatalf("test %d: protocol returned nil error, want %q", i, test.wantError)
 			} else if err.Error() != test.wantError.Error() {
-				t.Errorf("test %d: wrong error: got %q, want %q", i, err, test.wantError)
+				t.Fatalf("test %d: wrong error: got %q, want %q", i, err, test.wantError)
 			}
 		case <-time.After(2 * time.Second):
-			t.Errorf("protocol did not shut down within 2 seconds")
+			t.Fatalf("protocol did not shut down within 2 seconds")
 		}
 		p.close()
 	}
@@ -87,7 +88,8 @@ func TestRecvTransactions62(t *testing.T) {
 func testRecvTransactions(t *testing.T, protocol int) {
 	txAdded := make(chan []*types.Transaction)
 	pm, _ := newTestProtocolManagerMust(t, 5, 5, txAdded, nil)
-	pm.synced = 1 // mark synced to accept transactions
+	pm.synced = 1             // mark synced to accept transactions
+	pm.downloader.Terminate() // disable downloader so test would be deterministic
 	p, _ := newTestPeer("peer", protocol, pm, true)
 	defer pm.Stop()
 	defer p.close()
@@ -99,12 +101,12 @@ func testRecvTransactions(t *testing.T, protocol int) {
 	select {
 	case added := <-txAdded:
 		if len(added) != 1 {
-			t.Errorf("wrong number of added transactions: got %d, want 1", len(added))
+			t.Fatalf("wrong number of added transactions: got %d, want 1", len(added))
 		} else if added[0].Hash() != tx.Hash() {
-			t.Errorf("added wrong tx hash: got %v, want %v", added[0].Hash(), tx.Hash())
+			t.Fatalf("added wrong tx hash: got %v, want %v", added[0].Hash(), tx.Hash())
 		}
 	case <-time.After(2 * time.Second):
-		t.Errorf("no NewTxsNotify received within 2 seconds")
+		t.Fatalf("no NewTxsNotify received within 2 seconds")
 	}
 }
 
@@ -117,6 +119,7 @@ func TestSendTransactions62(t *testing.T) {
 func testSendTransactions(t *testing.T, protocol int) {
 	pm, _ := newTestProtocolManagerMust(t, 5, 5, nil, nil)
 	defer pm.Stop()
+	pm.downloader.Terminate() // disable downloader so test would be deterministic
 
 	// Fill the pool with big transactions.
 	const txsize = txsyncPackSize / 10
@@ -139,21 +142,21 @@ func testSendTransactions(t *testing.T, protocol int) {
 			var txs []*types.Transaction
 			msg, err := p.app.ReadMsg()
 			if err != nil {
-				t.Errorf("%v: read error: %v", p.Peer, err)
+				t.Fatalf("%v: read error: %v", p.Peer, err)
 			} else if msg.Code != EvmTxMsg {
-				t.Errorf("%v: got code %d, want TxMsg", p.Peer, msg.Code)
+				t.Fatalf("%v: got code %d, want TxMsg", p.Peer, msg.Code)
 			}
 			if err := msg.Decode(&txs); err != nil {
-				t.Errorf("%v: %v", p.Peer, err)
+				t.Fatalf("%v: %v", p.Peer, err)
 			}
 			for _, tx := range txs {
 				hash := tx.Hash()
 				seentx, want := seen[hash]
 				if seentx {
-					t.Errorf("%v: got tx more than once: %x", p.Peer, hash)
+					t.Fatalf("%v: got tx more than once: %x", p.Peer, hash)
 				}
 				if !want {
-					t.Errorf("%v: got unexpected tx: %x", p.Peer, hash)
+					t.Fatalf("%v: got unexpected tx: %x", p.Peer, hash)
 				}
 				seen[hash] = true
 				n++

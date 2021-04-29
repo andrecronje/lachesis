@@ -103,12 +103,17 @@ func (p *Poset) onFrameDecided(frame idx.Frame, atropos hash.Event) bool {
 	// new checkpoint
 	var sealEpoch bool
 	var appHash common.Hash
+	var skip bool
 	p.Checkpoint.LastBlockN++
 	if p.callback.ApplyBlock != nil {
-		appHash, sealEpoch = p.callback.ApplyBlock(block, frame, cheaters)
+		appHash, sealEpoch, skip = p.callback.ApplyBlock(block, frame, cheaters)
 		p.Checkpoint.AppHash = hash.Of(p.Checkpoint.AppHash.Bytes(), appHash.Bytes())
 	}
-	p.Checkpoint.LastAtropos = atropos
+	if skip {
+		p.Checkpoint.LastBlockN--
+	} else {
+		p.Checkpoint.LastAtropos = atropos
+	}
 	p.saveCheckpoint()
 
 	if sealEpoch {

@@ -83,23 +83,11 @@ func (f *wrapper) NewBatch() ethdb.Batch {
 	return f.underlying.NewBatch()
 }
 
-// NewIterator creates a binary-alphabetical iterator over the entire keyspace
-// contained within the key-value database.
-func (f *wrapper) NewIterator() ethdb.Iterator {
-	return f.underlying.NewIterator()
-}
-
-// NewIteratorWithStart creates a binary-alphabetical iterator over a subset of
-// database content starting at a particular initial key (or after, if it does
-// not exist).
-func (f *wrapper) NewIteratorWithStart(start []byte) ethdb.Iterator {
-	return f.underlying.NewIteratorWithStart(start)
-}
-
-// NewIteratorWithPrefix creates a binary-alphabetical iterator over a subset
-// of database content with a particular key prefix.
-func (f *wrapper) NewIteratorWithPrefix(prefix []byte) ethdb.Iterator {
-	return f.underlying.NewIteratorWithPrefix(prefix)
+// NewIterator creates a binary-alphabetical iterator over a subset
+// of database content with a particular key prefix, starting at a particular
+// initial key (or after, if it does not exist).
+func (f *wrapper) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
+	return f.underlying.NewIterator(prefix, start)
 }
 
 // Stat returns a particular internal stat of the database.

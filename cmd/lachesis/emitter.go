@@ -1,8 +1,7 @@
 package main
 
 import (
-	"github.com/ethereum/go-ethereum/accounts/keystore"
-	"github.com/ethereum/go-ethereum/cmd/utils"
+	"github.com/ethereum/go-ethereum/common"
 	cli "gopkg.in/urfave/cli.v1"
 
 	"github.com/Fantom-foundation/go-lachesis/crypto"
@@ -15,41 +14,26 @@ var validatorFlag = cli.StringFlag{
 	Value: "no",
 }
 
-// setValidator retrieves the validator address either from the directly specified
-// command line flags or from the keystore if CLI indexed.
-func setValidator(ctx *cli.Context, ks *keystore.KeyStore, cfg *gossip.EmitterConfig) {
+func getValidatorAddr(ctx *cli.Context, cfg *gossip.EmitterConfig) common.Address {
 	// Extract the current validator address, new flag overriding legacy one
-	var validator string
+	validator := cfg.Validator
 	switch {
 	case ctx.GlobalIsSet(validatorFlag.Name):
-		validator = ctx.GlobalString(validatorFlag.Name)
-		if validator == "no" || validator == "0" {
-			validator = ""
+		validatorStr := ctx.GlobalString(validatorFlag.Name)
+		if validatorStr != "no" && validatorStr != "0" {
+			validator = common.HexToAddress(validatorStr)
 		}
-	case ctx.GlobalIsSet(utils.MinerEtherbaseFlag.Name):
-		validator = ctx.GlobalString(utils.MinerEtherbaseFlag.Name)
-	case ctx.GlobalIsSet(utils.MinerLegacyEtherbaseFlag.Name):
-		validator = ctx.GlobalString(utils.MinerLegacyEtherbaseFlag.Name)
 	case ctx.GlobalIsSet(FakeNetFlag.Name):
 		key := getFakeValidator(ctx)
 		if key != nil {
-			validator = crypto.PubkeyToAddress(key.PublicKey).Hex()
+			validator = crypto.PubkeyToAddress(key.PublicKey)
 		}
 	}
+	return validator
+}
 
-	// Convert the validator into an address and configure it
-	if validator == "" {
-		return
-	}
-
-	if ks != nil {
-		account, err := utils.MakeAddress(ks, validator)
-		if err != nil {
-			utils.Fatalf("Invalid miner etherbase: %v", err)
-		}
-		cfg.Validator = account.Address
-	} else {
-		utils.Fatalf("No etherbase configured")
-	}
-
+// setValidator retrieves the validator address either from the directly specified
+// command line flags or from the keystore if CLI indexed.
+func setValidator(ctx *cli.Context, cfg *gossip.EmitterConfig) {
+	cfg.Validator = getValidatorAddr(ctx, cfg)
 }

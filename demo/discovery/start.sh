@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script will launch a cluster of N Lachesis nodes
-# using 
+# using
 # The parameter N = number of nodes to run
 
 set -e
@@ -33,7 +33,7 @@ IP=127.0.0.1
 # the actual ports are PORT+1, PORT+2, etc (18541, 18542, 18543, ... )
 PORT=18540
 
-# demo directory 
+# demo directory
 LACHESIS_BASE_DIR=/tmp/lachesis-demo
 
 echo -e "\nStart $N nodes:"
@@ -45,7 +45,7 @@ do
     ${EXEC} \
 	--bootnodes "${bootnode}" \
 	--fakenet $i/$N \
-	--port ${localport} --rpc --rpcapi "eth,ftm,debug,admin,web3" --rpcport ${port} --nousb --verbosity 3 \
+	--port ${localport} --http --http.api "eth,ftm,debug,admin,web3" --http.port ${port} --nousb --verbosity 3 \
 	--datadir "${LACHESIS_BASE_DIR}/datadir/lach$i" &
     echo -e "Started lachesis client at ${IP}:${port}, pid: $!"
 done

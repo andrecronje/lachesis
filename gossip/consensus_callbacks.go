@@ -1,6 +1,7 @@
 package gossip
 
 import (
+	"errors"
 	"math/big"
 	"time"
 
@@ -10,8 +11,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/Fantom-foundation/go-lachesis/eventcheck"
+	"github.com/Fantom-foundation/go-lachesis/eventcheck/epochcheck"
 	"github.com/Fantom-foundation/go-lachesis/evmcore"
 	"github.com/Fantom-foundation/go-lachesis/inter"
 	"github.com/Fantom-foundation/go-lachesis/inter/idx"
@@ -19,11 +22,54 @@ import (
 	"github.com/Fantom-foundation/go-lachesis/tracing"
 )
 
+var (
+	errStopped     = errors.New("service is stopped")
+	errMigration   = errors.New("network is migrating")
+	ErrUnderpriced = evmcore.ErrUnderpriced
+)
+
+// ProcessEvent takes event into processing.
+// Event order matter: parents first.
+// ProcessEvent is safe for concurrent use
+func (s *Service) ProcessEvent(e *inter.Event) error {
+	s.engineMu.Lock()
+	defer s.engineMu.Unlock()
+	return s.engine.ProcessEvent(e)
+}
+
+// ValidateEvent runs all the checkers for an event
+func (s *Service) ValidateEvent(e *inter.Event) error {
+	s.engineMu.RLock()
+	defer s.engineMu.RUnlock()
+	if e.Epoch != s.engine.GetEpoch() {
+		return epochcheck.ErrNotRelevant
+	}
+	if s.store.HasEventHeader(e.Hash()) {
+		return eventcheck.ErrAlreadyConnectedEvent
+	}
+	parents := make([]*inter.EventHeaderData, 0, len(e.Parents))
+	epoch := e.Epoch
+	for _, id := range e.Parents {
+		header := s.store.GetEventHeader(epoch, id)
+		if header == nil {
+			return errors.New("out of order")
+		}
+		parents = append(parents, header)
+	}
+	return s.checkers.Validate(e, parents)
+}
+
 // processEvent extends the engine.ProcessEvent with gossip-specific actions on each event processing
 func (s *Service) processEvent(realEngine Consensus, e *inter.Event) error {
 	// s.engineMu is locked here
+	if s.stopped {
+		return errStopped
+	}
+	if s.migration {
+		return eventcheck.ErrMigration
+	}
 
-	if s.store.HasEventHeader(e.Hash()) { // sanity check
+	if s.store.HasEvent(e.Hash()) { // sanity check
 		return eventcheck.ErrAlreadyConnectedEvent
 	}
 
@@ -33,6 +79,14 @@ func (s *Service) processEvent(realEngine Consensus, e *inter.Event) error {
 	}
 	if s.config.DecisiveEventsIndex {
 		s.currentEvent = e.Hash()
+	}
+
+	// check transactions gas price
+	minGasPrice := s.MinGasPrice()
+	for _, tx := range e.Transactions {
+		if tx.GasPrice().Cmp(minGasPrice) < 0 {
+			return ErrUnderpriced
+		}
 	}
 
 	oldEpoch := e.Epoch
@@ -64,6 +118,13 @@ func (s *Service) processEvent(realEngine Consensus, e *inter.Event) error {
 		newEpoch = realEngine.GetEpoch()
 	}
 
+	// update highest lamport
+	if newEpoch != oldEpoch {
+		s.store.SetHighestLamport(0)
+	} else if e.Lamport > s.store.GetHighestLamport() {
+		s.store.SetHighestLamport(e.Lamport)
+	}
+
 	if newEpoch != oldEpoch {
 		// notify event checkers about new validation data
 		s.heavyCheckReader.Addrs.Store(ReadEpochPubKeys(s.app, newEpoch))
@@ -80,12 +141,8 @@ func (s *Service) processEvent(realEngine Consensus, e *inter.Event) error {
 		s.feed.newEpoch.Send(newEpoch)
 	}
 
-	immediately := (newEpoch != oldEpoch)
+	immediately := newEpoch != oldEpoch
 
-	err := s.app.Commit(e.Hash().Bytes(), immediately)
-	if err != nil {
-		return err
-	}
 	return s.store.Commit(e.Hash().Bytes(), immediately)
 }
 
@@ -125,7 +182,10 @@ func (s *Service) applyNewState(
 
 	// Get stateDB
 	stateHash := s.store.GetBlock(block.Index - 1).Root
-	statedb := s.app.StateDB(stateHash)
+	statedb, err := s.app.StateDB(stateHash)
+	if err != nil {
+		s.Log.Crit("Failed to open state", "block", block.Index-1, "root", stateHash.String())
+	}
 
 	// Process EVM txs
 	block, evmBlock, totalFee, receipts := s.executeEvmTransactions(block, evmBlock, statedb)
@@ -267,7 +327,7 @@ func (s *Service) executeEvmTransactions(
 	// Filter skipped transactions
 	evmBlock = filterSkippedTxs(block, evmBlock)
 
-	block.TxHash = types.DeriveSha(evmBlock.Transactions)
+	block.TxHash = types.DeriveSha(evmBlock.Transactions, new(trie.Trie))
 	*evmBlock = evmcore.EvmBlock{
 		EvmHeader:    *evmcore.ToEvmHeader(block),
 		Transactions: evmBlock.Transactions,
@@ -295,8 +355,13 @@ func (s *Service) onEpochSealed(block *inter.Block, cheaters inter.Cheaters) {
 }
 
 // applyBlock execs ordered txns of new block on state, and fills the block DB indexes.
-func (s *Service) applyBlock(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (newAppHash common.Hash, sealEpoch bool) {
+func (s *Service) applyBlock(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (newAppHash common.Hash, sealEpoch bool, skip bool) {
+	if s.migration {
+		return common.Hash{}, false, true
+	}
 	// s.engineMu is locked here
+
+	s.lastBlockProcessed = time.Now()
 
 	confirmBlocksMeter.Inc(1)
 	// if cheater is confirmed, seal epoch right away to prune them from of BFT validators list
@@ -352,7 +417,7 @@ func (s *Service) applyBlock(block *inter.Block, decidedFrame idx.Frame, cheater
 
 	s.blockParticipated = make(map[idx.StakerID]bool) // reset map of participated validators
 
-	return newAppHash, sealEpoch
+	return newAppHash, sealEpoch, false
 }
 
 // selectValidatorsGroup is a callback type to select new validators group

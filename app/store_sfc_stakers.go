@@ -10,6 +10,9 @@ import (
 
 // SetEpochValidator stores EpochValidator
 func (s *Store) SetEpochValidators(epoch idx.Epoch, vv []sfctype.SfcStakerAndID) {
+	s.mutex.Validators.Lock()
+	defer s.mutex.Validators.Unlock()
+
 	for _, v := range vv {
 		key := append(epoch.Bytes(), v.StakerID.Bytes()...)
 		s.set(s.table.Validators, key, v.Staker)
@@ -27,6 +30,9 @@ func (s *Store) HasEpochValidator(epoch idx.Epoch, stakerID idx.StakerID) bool {
 
 // SetSfcStaker stores SfcStaker
 func (s *Store) SetSfcStaker(stakerID idx.StakerID, v *sfctype.SfcStaker) {
+	s.mutex.Stakers.Lock()
+	defer s.mutex.Stakers.Unlock()
+
 	s.set(s.table.Stakers, stakerID.Bytes(), v)
 
 	// Add to LRU cache.
@@ -37,6 +43,9 @@ func (s *Store) SetSfcStaker(stakerID idx.StakerID, v *sfctype.SfcStaker) {
 
 // DelSfcStaker deletes SfcStaker
 func (s *Store) DelSfcStaker(stakerID idx.StakerID) {
+	s.mutex.Stakers.Lock()
+	defer s.mutex.Stakers.Unlock()
+
 	err := s.table.Stakers.Delete(stakerID.Bytes())
 	if err != nil {
 		s.Log.Crit("Failed to erase staker")
@@ -50,7 +59,7 @@ func (s *Store) DelSfcStaker(stakerID idx.StakerID) {
 
 // ForEachSfcStaker iterates all stored SfcStakers
 func (s *Store) ForEachSfcStaker(do func(sfctype.SfcStakerAndID)) {
-	it := s.table.Stakers.NewIterator()
+	it := s.table.Stakers.NewIterator(nil, nil)
 	defer it.Release()
 	s.forEachSfcStaker(it, do)
 }
@@ -66,12 +75,15 @@ func (s *Store) GetSfcStakers() []sfctype.SfcStakerAndID {
 
 // GetEpochValidators returns all stored EpochValidators on the epoch
 func (s *Store) GetEpochValidators(epoch idx.Epoch) []sfctype.SfcStakerAndID {
+	s.mutex.Validators.Lock()
+	defer s.mutex.Validators.Unlock()
+
 	// Get from cache
 	if bVal, okGet := s.cache.Validators.Get(epoch); okGet {
 		return bVal.([]sfctype.SfcStakerAndID)
 	}
 
-	it := s.table.Validators.NewIteratorWithPrefix(epoch.Bytes())
+	it := s.table.Validators.NewIterator(epoch.Bytes(), nil)
 	defer it.Release()
 	validators := make([]sfctype.SfcStakerAndID, 0, 200)
 	s.forEachSfcStaker(it, func(staker sfctype.SfcStakerAndID) {
@@ -102,6 +114,9 @@ func (s *Store) forEachSfcStaker(it ethdb.Iterator, do func(sfctype.SfcStakerAnd
 
 // GetSfcStaker returns stored SfcStaker
 func (s *Store) GetSfcStaker(stakerID idx.StakerID) *sfctype.SfcStaker {
+	s.mutex.Stakers.Lock()
+	defer s.mutex.Stakers.Unlock()
+
 	// Get data from LRU cache first.
 	if s.cache.Stakers != nil {
 		if c, ok := s.cache.Stakers.Get(stakerID); ok {

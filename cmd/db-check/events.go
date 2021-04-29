@@ -14,7 +14,7 @@ import (
 func checkEvents(db kvdb.KeyValueStore) {
 	t := table.New(db, []byte("e"))
 
-	it := t.NewIterator()
+	it := t.NewIterator(nil, nil)
 	defer it.Release()
 
 	found := make(map[hash.Event]struct{})

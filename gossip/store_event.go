@@ -7,6 +7,7 @@ package gossip
 import (
 	"bytes"
 
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/Fantom-foundation/go-lachesis/hash"
@@ -28,8 +29,6 @@ func (s *Store) DeleteEvent(epoch idx.Epoch, id hash.Event) {
 	if s.cache.Events != nil {
 		s.cache.Events.Remove(id)
 	}
-
-	s.Log.Info("DeleteEvent", "event", id)
 }
 
 // SetEvent stores event.
@@ -68,9 +67,7 @@ func (s *Store) GetEvent(id hash.Event) *inter.Event {
 	return w
 }
 
-func (s *Store) ForEachEvent(epoch idx.Epoch, onEvent func(event *inter.Event) bool) {
-	it := s.table.Events.NewIteratorWithPrefix(epoch.Bytes())
-	defer it.Release()
+func (s *Store) forEachEvent(it ethdb.Iterator, onEvent func(event *inter.Event) bool) {
 	for it.Next() {
 		event := &inter.Event{}
 		err := rlp.DecodeBytes(it.Value(), event)
@@ -84,13 +81,35 @@ func (s *Store) ForEachEvent(epoch idx.Epoch, onEvent func(event *inter.Event) b
 	}
 }
 
+func (s *Store) ForEachEpochEvent(epoch idx.Epoch, onEvent func(event *inter.Event) bool) {
+	it := s.table.Events.NewIterator(epoch.Bytes(), nil)
+	defer it.Release()
+	s.forEachEvent(it, onEvent)
+}
+
+func (s *Store) ForEachEvent(start idx.Epoch, onEvent func(event *inter.Event) bool) {
+	it := s.table.Events.NewIterator(nil, start.Bytes())
+	defer it.Release()
+	s.forEachEvent(it, onEvent)
+}
+
+func (s *Store) ForEachEventRLP(start idx.Epoch, onEvent func(key hash.Event, event rlp.RawValue) bool) {
+	it := s.table.Events.NewIterator(nil, start.Bytes())
+	defer it.Release()
+	for it.Next() {
+		if !onEvent(hash.BytesToEvent(it.Key()), it.Value()) {
+			return
+		}
+	}
+}
+
 func (s *Store) FindEventHashes(epoch idx.Epoch, lamport idx.Lamport, hashPrefix []byte) hash.Events {
 	prefix := bytes.NewBuffer(epoch.Bytes())
 	prefix.Write(lamport.Bytes())
 	prefix.Write(hashPrefix)
 	res := make(hash.Events, 0, 10)
 
-	it := s.table.Events.NewIteratorWithPrefix(prefix.Bytes())
+	it := s.table.Events.NewIterator(prefix.Bytes(), nil)
 	defer it.Release()
 	for it.Next() {
 		res = append(res, hash.BytesToEvent(it.Key()))
@@ -113,4 +132,16 @@ func (s *Store) GetEventRLP(id hash.Event) rlp.RawValue {
 // HasEvent returns true if event exists.
 func (s *Store) HasEvent(h hash.Event) bool {
 	return s.has(s.table.Events, h.Bytes())
+}
+
+func (s *Store) GetHighestLamport() idx.Lamport {
+	cache := s.cache.HighestLamport.Load()
+	if cache != nil {
+		return cache.(idx.Lamport)
+	}
+	return 0
+}
+
+func (s *Store) SetHighestLamport(lamport idx.Lamport) {
+	s.cache.HighestLamport.Store(lamport)
 }

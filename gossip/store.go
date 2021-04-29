@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru"
 
+	"github.com/Fantom-foundation/go-lachesis/app"
 	"github.com/Fantom-foundation/go-lachesis/common/bigendian"
 	"github.com/Fantom-foundation/go-lachesis/gossip/temporary"
 	"github.com/Fantom-foundation/go-lachesis/kvdb"
@@ -24,17 +26,23 @@ type Store struct {
 	dbs *flushable.SyncedPool
 	cfg StoreConfig
 
+	async *asyncStore
+
 	mainDb kvdb.KeyValueStore
+	app    *app.Store
 	table  struct {
-		// Network tables
-		Peers kvdb.KeyValueStore `table:"Z"`
+		Version kvdb.KeyValueStore `table:"_"`
+
+		// network version table
+		NetworkVersion kvdb.KeyValueStore `table:"J"`
 
 		// Main DAG tables
-		Events    kvdb.KeyValueStore `table:"e"`
-		Blocks    kvdb.KeyValueStore `table:"b"`
-		PackInfos kvdb.KeyValueStore `table:"p"`
-		Packs     kvdb.KeyValueStore `table:"P"`
-		PacksNum  kvdb.KeyValueStore `table:"n"`
+		Events         kvdb.KeyValueStore `table:"e"`
+		Blocks         kvdb.KeyValueStore `table:"b"`
+		PackInfos      kvdb.KeyValueStore `table:"p"`
+		Packs          kvdb.KeyValueStore `table:"P"`
+		PacksNum       kvdb.KeyValueStore `table:"n"`
+		HighestLamport kvdb.KeyValueStore `table:"u"`
 
 		// general economy tables
 		EpochStats kvdb.KeyValueStore `table:"E"`
@@ -54,13 +62,14 @@ type Store struct {
 	EpochDbs *temporary.Dbs
 
 	cache struct {
-		Events        *lru.Cache `cache:"-"` // store by pointer
-		EventsHeaders *lru.Cache `cache:"-"` // store by pointer
-		Blocks        *lru.Cache `cache:"-"` // store by pointer
-		PackInfos     *lru.Cache `cache:"-"` // store by value
-		EpochStats    *lru.Cache `cache:"-"` // store by value
-		TxPositions   *lru.Cache `cache:"-"` // store by pointer
-		BlockHashes   *lru.Cache `cache:"-"` // store by pointer
+		Events         *lru.Cache   `cache:"-"` // store by pointer
+		EventsHeaders  *lru.Cache   `cache:"-"` // store by pointer
+		Blocks         *lru.Cache   `cache:"-"` // store by pointer
+		PackInfos      *lru.Cache   `cache:"-"` // store by value
+		EpochStats     *lru.Cache   `cache:"-"` // store by value
+		TxPositions    *lru.Cache   `cache:"-"` // store by pointer
+		BlockHashes    *lru.Cache   `cache:"-"` // store by pointer
+		HighestLamport atomic.Value // store by value
 	}
 
 	mutex struct {
@@ -75,15 +84,17 @@ func NewMemStore() *Store {
 	mems := memorydb.NewProducer("")
 	dbs := flushable.NewSyncedPool(mems)
 	cfg := LiteStoreConfig()
+	appCfg := app.LiteStoreConfig()
 
-	return NewStore(dbs, cfg)
+	return NewStore(dbs, cfg, appCfg)
 }
 
 // NewStore creates store over key-value db.
-func NewStore(dbs *flushable.SyncedPool, cfg StoreConfig) *Store {
+func NewStore(dbs *flushable.SyncedPool, cfg StoreConfig, appCfg app.StoreConfig) *Store {
 	s := &Store{
 		dbs:      dbs,
 		cfg:      cfg,
+		async:    newAsyncStore(dbs),
 		mainDb:   dbs.GetDb("gossip-main"),
 		Instance: logger.MakeInstance(),
 	}
@@ -100,9 +111,7 @@ func NewStore(dbs *flushable.SyncedPool, cfg StoreConfig) *Store {
 	})
 
 	s.initCache()
-
-	// for compability with db before commit 591ede6
-	s.rmPrefix(s.table.PackInfos, "serverPool")
+	s.app = app.NewStore(s.mainDb, appCfg)
 
 	return s
 }
@@ -135,6 +144,7 @@ func (s *Store) Close() {
 	table.MigrateCaches(&s.cache, setnil)
 
 	s.mainDb.Close()
+	s.async.Close()
 }
 
 // Commit changes.
@@ -152,7 +162,15 @@ func (s *Store) Commit(flushID []byte, immediately bool) error {
 	}
 
 	// Flush the DBs
+	err := s.app.Commit()
+	if err != nil {
+		return err
+	}
 	return s.dbs.Flush(flushID)
+}
+
+func (s *Store) App() *app.Store {
+	return s.app
 }
 
 /*
@@ -197,7 +215,7 @@ func (s *Store) has(table kvdb.KeyValueStore, key []byte) bool {
 }
 
 func (s *Store) rmPrefix(t kvdb.KeyValueStore, prefix string) {
-	it := t.NewIteratorWithPrefix([]byte(prefix))
+	it := t.NewIterator([]byte(prefix), nil)
 	defer it.Release()
 
 	s.dropTable(it, t)

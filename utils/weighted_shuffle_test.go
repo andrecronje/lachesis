@@ -2,13 +2,13 @@ package utils
 
 import (
 	"crypto/sha256"
-	"github.com/Fantom-foundation/go-lachesis/inter/pos"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/Fantom-foundation/go-lachesis/common/littleendian"
+	"github.com/Fantom-foundation/go-lachesis/inter/pos"
 )
 
 func getTestWeightsIncreasing(num int) []pos.Stake {

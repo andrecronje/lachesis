@@ -23,8 +23,8 @@ do
 	--datadir=${DATADIR} \
 	--fakenet=${ACC}/$N,test_accs.json \
 	--port=${PORT} \
-	--rpc --rpcaddr="127.0.0.1" --rpcport=${RPCP} --rpccorsdomain="*" --rpcapi="eth,debug,admin,web3,personal,txpool,ftm,sfc" \
-	--ws --wsaddr="127.0.0.1" --wsport=${WSP} --wsorigins="*" --wsapi="eth,debug,admin,web3,personal,txpool,ftm,sfc" \
+	--http --http.addr="127.0.0.1" --http.port=${RPCP} --http.corsdomain="*" --http.api="eth,debug,admin,web3,personal,txpool,ftm,sfc" \
+	--ws --ws.addr="127.0.0.1" --ws.port=${WSP} --ws.origins="*" --ws.api="eth,debug,admin,web3,personal,txpool,ftm,sfc" \
 	--nousb --verbosity=3 --tracing &> .lachesis$i.log)&
 done
 
@@ -36,7 +36,7 @@ attach_and_exec() {
     for attempt in $(seq 20)
     do
         if (( attempt > 5 ));
-        then 
+        then
             echo "  - attempt ${attempt}: " >&2
         fi;
 

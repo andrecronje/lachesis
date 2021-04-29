@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"fmt"
+	"math/big"
 	"math/rand"
 	"strings"
 	"sync"
@@ -11,7 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/hashicorp/golang-lru"
+	"github.com/ethereum/go-ethereum/trie"
+	lru "github.com/hashicorp/golang-lru"
 
 	"github.com/Fantom-foundation/go-lachesis/app"
 	"github.com/Fantom-foundation/go-lachesis/common/bigendian"
@@ -52,9 +54,13 @@ type EmitterWorld struct {
 
 	Checkers *eventcheck.Checkers
 
-	OnEmitted func(e *inter.Event)
-	IsSynced  func() bool
-	PeersNum  func() int
+	MinGasPrice        func() *big.Int
+	OnEmitted          func(e *inter.Event)
+	IsSynced           func() bool
+	LastBlockProcessed func() time.Time
+	PeersNum           func() int
+
+	IsMigration func() bool
 
 	AddVersion func(e *inter.Event) *inter.Event
 }
@@ -84,6 +90,7 @@ type Emitter struct {
 }
 
 type selfForkProtection struct {
+	startupTime             time.Time
 	connectedTime           time.Time
 	syncedTime              time.Time
 	prevLocalEmittedID      hash.Event
@@ -115,6 +122,7 @@ func NewEmitter(
 // init emitter without starting events emission
 func (em *Emitter) init() {
 	em.syncStatus.connectedTime = time.Now()
+	em.syncStatus.startupTime = time.Now()
 	validators, epoch := em.world.Engine.GetEpochValidators()
 	em.OnNewEpoch(validators, epoch)
 }
@@ -136,6 +144,7 @@ func (em *Emitter) StartEventEmission() {
 	go func() {
 		defer em.wg.Done()
 		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			select {
 			case txNotify := <-newTxsCh:
@@ -265,6 +274,8 @@ func (em *Emitter) addTxs(e *inter.Event, poolTxs map[common.Address]types.Trans
 		validatorsArrStakes[i] = validators.Get(addr)
 	}
 
+	minGasPrice := em.world.MinGasPrice()
+
 	for sender, txs := range poolTxs {
 		if txs.Len() > em.config.MaxTxsFromSender { // no more than MaxTxsFromSender txs from 1 sender
 			txs = txs[:em.config.MaxTxsFromSender]
@@ -272,6 +283,10 @@ func (em *Emitter) addTxs(e *inter.Event, poolTxs map[common.Address]types.Trans
 
 		// txs is the chain of dependent txs
 		for _, tx := range txs {
+			// not underpriced
+			if tx.GasPrice().Cmp(minGasPrice) < 0 {
+				break
+			}
 			// enough gas power
 			if tx.Gas() >= e.GasPowerLeft.Min() || e.GasPowerUsed+tx.Gas() >= maxGasUsed {
 				break // txs are dependent, so break the loop
@@ -332,6 +347,9 @@ func (em *Emitter) findBestParents(epoch idx.Epoch, myStakerID idx.StakerID) (*h
 func (em *Emitter) createEvent(poolTxs map[common.Address]types.Transactions) *inter.Event {
 	if em.myStakerID == 0 {
 		// not a validator
+		return nil
+	}
+	if em.world.IsMigration() {
 		return nil
 	}
 
@@ -424,7 +442,7 @@ func (em *Emitter) createEvent(poolTxs map[common.Address]types.Transactions) *i
 	}
 
 	// calc Merkle root
-	event.TxHash = types.DeriveSha(event.Transactions)
+	event.TxHash = types.DeriveSha(event.Transactions, new(trie.Trie))
 
 	// sign
 	myAddress := em.myAddress
@@ -544,20 +562,24 @@ func (em *Emitter) OnNewEvent(e *inter.Event) {
 
 	// event was emitted by me on another instance
 	em.syncStatus.prevExternalEmittedTime = time.Now()
-	if synced, _, _ := em.isSynced(); !synced {
+
+	eventTime := inter.MaxTimestamp(e.ClaimedTime, e.MedianTime).Time()
+	if eventTime.Before(em.syncStatus.startupTime) {
 		return
 	}
 
-	passedSinceEvent := time.Since(inter.MaxTimestamp(e.ClaimedTime, e.MedianTime).Time())
+	passedSinceEvent := time.Since(eventTime)
 	threshold := em.intervals.SelfForkProtection
 	if threshold > time.Minute {
 		threshold = time.Minute
 	}
 	if passedSinceEvent <= threshold {
-		reason := "Received a recent event (event id=%s) from this validator (staker id=%d) which wasn't created on this node.\n" +
+		reason := "Received a recent event (event id=%s) from this validator (staker ID=%d) which wasn't created on this node.\n" +
 			"This external event was created %s, %s ago at the time of this error.\n" +
-			"It means that a duplicating instance of the same validator is running simultaneously, which will eventually lead to a doublesign.\n" +
-			"For now, doublesign was prevented by one of the heuristics, but next time you (and your delegators) may lose the stake."
+			"It might mean that a duplicating instance of the same validator is running simultaneously, which may eventually lead to a doublesign.\n" +
+			"The node was stopped by one of the doublesign protection heuristics.\n" +
+			"There's no guaranteed automatic protection against a doublesign," +
+			"please always ensure that no more than one instance of the same validator is running."
 		errlock.Permanent(fmt.Errorf(reason, e.Hash().String(), em.myStakerID, e.ClaimedTime.Time().Local().String(), passedSinceEvent.String()))
 	}
 
@@ -641,7 +663,17 @@ func (em *Emitter) maxGasPowerToUse(e *inter.Event) uint64 {
 			return maxGasUsed
 		}
 	}
-	return params.MaxGasPowerUsed
+	maxGasUsed := uint64(params.MaxGasPowerUsed)
+	if time.Since(em.world.LastBlockProcessed()) > 2*em.intervals.Max {
+		maxGasUsed /= 2
+	}
+	if time.Since(em.world.LastBlockProcessed()) > 3*em.intervals.Max {
+		maxGasUsed /= 2
+	}
+	if time.Since(em.world.LastBlockProcessed()) > 4*em.intervals.Max {
+		maxGasUsed /= 15
+	}
+	return maxGasUsed
 }
 
 func (em *Emitter) isAllowedToEmit(e *inter.Event, selfParent *inter.EventHeaderData) bool {
@@ -685,7 +717,17 @@ func (em *Emitter) isAllowedToEmit(e *inter.Event, selfParent *inter.EventHeader
 	}
 	// Emit no more than 1 event per confirmingEmitInterval (when there's no txs to originate, but at least 1 tx to confirm)
 	{
-		if passedTime < em.intervals.Confirming &&
+		interval := em.intervals.Confirming
+		if time.Since(em.world.LastBlockProcessed()) > 2*em.intervals.Max {
+			interval *= 2
+		}
+		if time.Since(em.world.LastBlockProcessed()) > 3*em.intervals.Max {
+			interval *= 2
+		}
+		if time.Since(em.world.LastBlockProcessed()) > 4*em.intervals.Max {
+			interval *= 25
+		}
+		if passedTime < interval &&
 			em.world.OccurredTxs.Len() != 0 &&
 			len(e.Transactions) == 0 {
 			return false

@@ -48,15 +48,12 @@ func (v *Checker) validateTx(tx *types.Transaction) error {
 		return ErrNegativeValue
 	}
 	// Ensure the transaction has more gas than the basic tx fee.
-	intrGas, err := evmcore.IntrinsicGas(tx.Data(), tx.To() == nil, true)
+	intrGas, err := evmcore.IntrinsicGas(tx.Data(), tx.To() == nil)
 	if err != nil {
 		return err
 	}
 	if tx.Gas() < intrGas {
 		return ErrIntrinsicGas
-	}
-	if tx.GasPrice().Cmp(params.MinGasPrice) < 0 {
-		return ErrUnderpriced
 	}
 	return nil
 }

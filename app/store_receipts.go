@@ -43,10 +43,8 @@ func (s *Store) GetReceipts(n idx.Block) types.Receipts {
 	// Get data from LRU cache first.
 	if s.cache.Receipts != nil {
 		if c, ok := s.cache.Receipts.Get(n); ok {
-			if receiptsStorage, ok = c.(*[]*receiptRLP); !ok {
-				if cv, ok := c.([]*receiptRLP); ok {
-					receiptsStorage = &cv
-				}
+			if cv, ok := c.([]*receiptRLP); ok {
+				receiptsStorage = &cv
 			}
 		}
 	}

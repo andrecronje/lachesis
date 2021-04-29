@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/Fantom-foundation/go-lachesis/hash"
 	"github.com/Fantom-foundation/go-lachesis/inter"
@@ -87,7 +88,7 @@ func benchmarkStore(b *testing.B) {
 				if e.Seq%2 != 0 {
 					e.Transactions = append(e.Transactions, &types.Transaction{})
 				}
-				e.TxHash = types.DeriveSha(e.Transactions)
+				e.TxHash = types.DeriveSha(e.Transactions, new(trie.Trie))
 				return p.Prepare(e)
 			},
 		})

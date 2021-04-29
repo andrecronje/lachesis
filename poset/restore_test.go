@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/Fantom-foundation/go-lachesis/inter"
@@ -53,9 +54,9 @@ func TestRestore(t *testing.T) {
 	// seal epoch on decided frame == maxEpochBlocks
 	for _, poset := range posets {
 		applyBlock := poset.callback.ApplyBlock
-		poset.callback.ApplyBlock = func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (common.Hash, bool) {
-			h, _ := applyBlock(block, decidedFrame, cheaters)
-			return h, decidedFrame == idx.Frame(maxEpochBlocks)
+		poset.callback.ApplyBlock = func(block *inter.Block, decidedFrame idx.Frame, cheaters inter.Cheaters) (common.Hash, bool, bool) {
+			h, _, _ := applyBlock(block, decidedFrame, cheaters)
+			return h, decidedFrame == idx.Frame(maxEpochBlocks), false
 		}
 	}
 
@@ -78,7 +79,7 @@ func TestRestore(t *testing.T) {
 				if e.Seq%2 != 0 {
 					e.Transactions = append(e.Transactions, &types.Transaction{})
 				}
-				e.TxHash = types.DeriveSha(e.Transactions)
+				e.TxHash = types.DeriveSha(e.Transactions, new(trie.Trie))
 				return posets[GENERATOR].Prepare(e)
 			},
 		})
@@ -200,7 +201,7 @@ func TestDbFailure(t *testing.T) {
 			if e.Seq%2 != 0 {
 				e.Transactions = append(e.Transactions, &types.Transaction{})
 			}
-			e.TxHash = types.DeriveSha(e.Transactions)
+			e.TxHash = types.DeriveSha(e.Transactions, new(trie.Trie))
 			return posets[GENERATOR].Prepare(e)
 		},
 	})

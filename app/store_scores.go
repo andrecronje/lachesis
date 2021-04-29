@@ -10,10 +10,10 @@ import (
 
 // IncBlocksMissed add count of missed blocks for validator
 func (s *Store) IncBlocksMissed(stakerID idx.StakerID, periodDiff inter.Timestamp) {
-	s.mutex.Inc.Lock()
-	defer s.mutex.Inc.Unlock()
+	s.mutex.BlockDowntime.Lock()
+	defer s.mutex.BlockDowntime.Unlock()
 
-	missed := s.GetBlocksMissed(stakerID)
+	missed := s.getBlocksMissed(stakerID)
 	missed.Num++
 	missed.Period += periodDiff
 	s.set(s.table.BlockDowntime, stakerID.Bytes(), &missed)
@@ -23,8 +23,8 @@ func (s *Store) IncBlocksMissed(stakerID idx.StakerID, periodDiff inter.Timestam
 
 // ResetBlocksMissed set to 0 missed blocks for validator
 func (s *Store) ResetBlocksMissed(stakerID idx.StakerID) {
-	s.mutex.Inc.Lock()
-	defer s.mutex.Inc.Unlock()
+	s.mutex.BlockDowntime.Lock()
+	defer s.mutex.BlockDowntime.Unlock()
 
 	err := s.table.BlockDowntime.Delete(stakerID.Bytes())
 	if err != nil {
@@ -36,6 +36,13 @@ func (s *Store) ResetBlocksMissed(stakerID idx.StakerID) {
 
 // GetBlocksMissed return blocks missed num for validator
 func (s *Store) GetBlocksMissed(stakerID idx.StakerID) BlocksMissed {
+	s.mutex.BlockDowntime.Lock()
+	defer s.mutex.BlockDowntime.Unlock()
+
+	return s.getBlocksMissed(stakerID)
+}
+
+func (s *Store) getBlocksMissed(stakerID idx.StakerID) BlocksMissed {
 	missedVal, ok := s.cache.BlockDowntime.Get(stakerID)
 	if ok {
 		if missed, ok := missedVal.(BlocksMissed); ok {
@@ -107,14 +114,14 @@ func (s *Store) getValidationScore(t kvdb.KeyValueStore, stakerID idx.StakerID) 
 
 // DelAllActiveValidationScores deletes all the record about dirty validation scores of stakers
 func (s *Store) DelAllActiveValidationScores() {
-	it := s.table.ActiveValidationScore.NewIterator()
+	it := s.table.ActiveValidationScore.NewIterator(nil, nil)
 	defer it.Release()
 	s.dropTable(it, s.table.ActiveValidationScore)
 }
 
 // MoveDirtyValidationScoresToActive moves all the dirty records to active
 func (s *Store) MoveDirtyValidationScoresToActive() {
-	it := s.table.DirtyValidationScore.NewIterator()
+	it := s.table.DirtyValidationScore.NewIterator(nil, nil)
 	defer it.Release()
 
 	keys := make([][]byte, 0, 500) // don't write during iteration
@@ -190,14 +197,14 @@ func (s *Store) getOriginationScore(t kvdb.KeyValueStore, stakerID idx.StakerID)
 
 // DelAllActiveOriginationScores deletes all the record about dirty origination scores of stakers
 func (s *Store) DelAllActiveOriginationScores() {
-	it := s.table.ActiveOriginationScore.NewIterator()
+	it := s.table.ActiveOriginationScore.NewIterator(nil, nil)
 	defer it.Release()
 	s.dropTable(it, s.table.ActiveOriginationScore)
 }
 
 // MoveDirtyOriginationScoresToActive moves all the dirty records to active
 func (s *Store) MoveDirtyOriginationScoresToActive() {
-	it := s.table.DirtyOriginationScore.NewIterator()
+	it := s.table.DirtyOriginationScore.NewIterator(nil, nil)
 	defer it.Release()
 
 	keys := make([][]byte, 0, 500) // don't write during iteration

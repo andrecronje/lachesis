@@ -28,7 +28,7 @@ func TestFakeNetFlag_NonValidator(t *testing.T) {
 	cli.SetTemplateFunc("niltime", genesisStart)
 	cli.SetTemplateFunc("apis", func() string { return ipcAPIs })
 
-	waitForEndpoint(t, filepath.Join(cli.Datadir, "lachesis.ipc"), 10*time.Second)
+	waitForEndpoint(t, filepath.Join(cli.Datadir, "lachesis.ipc"), 60*time.Second)
 
 	// Verify the actual welcome message to the required template
 	cli.Expect(`
@@ -71,7 +71,7 @@ func TestFakeNetFlag_Validator(t *testing.T) {
 	cli.SetTemplateFunc("niltime", genesisStart)
 	cli.SetTemplateFunc("apis", func() string { return ipcAPIs })
 
-	waitForEndpoint(t, filepath.Join(cli.Datadir, "lachesis.ipc"), 10*time.Second)
+	waitForEndpoint(t, filepath.Join(cli.Datadir, "lachesis.ipc"), 60*time.Second)
 
 	// Verify the actual welcome message to the required template
 	cli.Expect(`

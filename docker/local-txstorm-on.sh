@@ -4,19 +4,34 @@ cd $(dirname $0)
 
 set -e
 
-
-echo -e "\nStart $N tx-storms:\n"
+echo -e "\nConfigure tx-storm:\n"
 
 METRICS=--metrics
 
+cat << HEADER > tx-storm.toml
+ChainId = 4003
+
+SendTrusted = false
+
+URLs = [                                                                                                                                                                                                    
+HEADER
+
 for ((i=0;i<$N;i+=1))
 do
-  RPCP=$(($RPCP_BASE+$i))
-  ACC=$(($i+1))
-    (go run ../cmd/tx-storm \
-	--num ${ACC}/$N --rate=10 \
-	--accs-start=${TEST_ACCS_START} --accs-count=${TEST_ACCS_COUNT} \
-	${METRICS} --verbosity 5 \
-	http://127.0.0.1:${RPCP}  &> .txstorm$i.log)&
-    METRICS=
+  WSP=$(($WSP_BASE+$i))
+  echo "\"ws://127.0.0.1:${WSP}\"", >> tx-storm.toml
 done
+
+cat << FOOTER >> tx-storm.toml
+]
+
+[Accs]
+Count = ${TEST_ACCS_COUNT}
+Offset = ${TEST_ACCS_START}
+FOOTER
+
+echo -e "\nStart tx-storm:\n"
+(go run ../cmd/tx-storm \
+    ${METRICS} --verbosity 3 \
+    &> .txstorm.log)&
+

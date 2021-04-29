@@ -73,7 +73,7 @@ func (b *EthAPIBackend) HeaderByHash(ctx context.Context, h common.Hash) (*evmco
 // BlockByNumber returns block by its number.
 func (b *EthAPIBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*evmcore.EvmBlock, error) {
 	if number == rpc.PendingBlockNumber {
-		return nil, errors.New("pending block request isn't allowed")
+		number = rpc.LatestBlockNumber
 	}
 	// Otherwise resolve and return the block
 	var blk *evmcore.EvmBlock
@@ -87,21 +87,26 @@ func (b *EthAPIBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumbe
 	return blk, nil
 }
 
-func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *evmcore.EvmHeader, error) {
-	if number == rpc.PendingBlockNumber {
-		return nil, nil, errors.New("pending block request isn't allowed")
-	}
+func (b *EthAPIBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *evmcore.EvmHeader, error) {
 	var header *evmcore.EvmHeader
-	if number == rpc.LatestBlockNumber {
+	if number, ok := blockNrOrHash.Number(); ok && number == rpc.LatestBlockNumber || number == rpc.PendingBlockNumber {
 		header = &b.state.CurrentBlock().EvmHeader
-	} else {
+	} else if number, ok := blockNrOrHash.Number(); ok {
 		header = b.state.GetHeader(common.Hash{}, uint64(number))
+	} else if h, ok := blockNrOrHash.Hash(); ok {
+		index := b.svc.store.GetBlockIndex(hash.Event(h))
+		if index == nil {
+			return nil, nil, errors.New("header not found")
+		}
+		header = b.state.GetHeader(common.Hash{}, uint64(*index))
+	} else {
+		return nil, nil, errors.New("unknown header selector")
 	}
 	if header == nil {
 		return nil, nil, errors.New("header not found")
 	}
-	stateDb := b.svc.app.StateDB(header.Root)
-	return stateDb, header, nil
+	stateDb, err := b.svc.app.StateDB(header.Root)
+	return stateDb, header, err
 }
 
 // decodeShortEventID decodes ShortID
@@ -230,15 +235,15 @@ func (b *EthAPIBackend) GetHeads(ctx context.Context, epoch rpc.BlockNumber) (he
 	return
 }
 
-// ForEachEvent iterates all the events which are observed by head, and accepted by a filter.
+// ForEachEpochEvent iterates all the events which are observed by head, and accepted by a filter.
 // filter CANNOT called twice for the same event.
-func (b *EthAPIBackend) ForEachEvent(ctx context.Context, epoch rpc.BlockNumber, onEvent func(event *inter.Event) bool) error {
+func (b *EthAPIBackend) ForEachEpochEvent(ctx context.Context, epoch rpc.BlockNumber, onEvent func(event *inter.Event) bool) error {
 	requested, err := b.epochWithDefault(ctx, epoch)
 	if err != nil {
 		return err
 	}
 
-	b.svc.store.ForEachEvent(requested, onEvent)
+	b.svc.store.ForEachEpochEvent(requested, onEvent)
 	return nil
 }
 
@@ -246,7 +251,7 @@ func (b *EthAPIBackend) GetValidators(ctx context.Context) *pos.Validators {
 	return b.svc.engine.GetValidators()
 }
 
-func (b *EthAPIBackend) GetBlock(ctx context.Context, h common.Hash) (*evmcore.EvmBlock, error) {
+func (b *EthAPIBackend) BlockByHash(ctx context.Context, h common.Hash) (*evmcore.EvmBlock, error) {
 	index := b.svc.store.GetBlockIndex(hash.Event(h))
 	if index == nil {
 		return nil, nil
@@ -274,7 +279,7 @@ func (b *EthAPIBackend) GetReceiptsByNumber(ctx context.Context, number rpc.Bloc
 	}
 
 	if number == rpc.PendingBlockNumber {
-		return nil, errors.New("pending block request isn't allowed")
+		number = rpc.LatestBlockNumber
 	}
 	if number == rpc.LatestBlockNumber {
 		header := b.state.CurrentHeader()
@@ -321,6 +326,9 @@ func (b *EthAPIBackend) GetEVM(ctx context.Context, msg evmcore.Message, state *
 }
 
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
+	if b.svc.IsMigration() {
+		return errMigration
+	}
 	err := b.svc.txpool.AddLocal(signedTx)
 	if err == nil {
 		// NOTE: only sent txs tracing, see TxPool.addTxs() for all
@@ -427,6 +435,10 @@ func (b *EthAPIBackend) SuggestPrice(ctx context.Context) (*big.Int, error) {
 	return b.gpo.SuggestPrice(ctx)
 }
 
+func (b *EthAPIBackend) MinGasPrice() *big.Int {
+	return b.svc.MinGasPrice()
+}
+
 func (b *EthAPIBackend) ChainDb() ethdb.Database {
 	return b.svc.app.EvmTable()
 }
@@ -439,8 +451,12 @@ func (b *EthAPIBackend) ExtRPCEnabled() bool {
 	return b.extRPCEnabled
 }
 
-func (b *EthAPIBackend) RPCGasCap() *big.Int {
+func (b *EthAPIBackend) RPCGasCap() uint64 {
 	return b.svc.config.RPCGasCap
+}
+
+func (b *EthAPIBackend) RPCTxFeeCap() float64 {
+	return b.svc.config.RPCTxFeeCap
 }
 
 func (b *EthAPIBackend) EvmLogIndex() *topicsdb.Index {
@@ -476,7 +492,10 @@ func (b *EthAPIBackend) GetEpochStats(ctx context.Context, requestedEpoch rpc.Bl
 
 	// read total reward weights from SFC contract
 	header := b.state.CurrentHeader()
-	statedb := b.svc.app.StateDB(header.Root)
+	statedb, err := b.svc.app.StateDB(header.Root)
+	if err != nil {
+		return nil, err
+	}
 
 	epochPosition := sfcpos.EpochSnapshot(epoch)
 	stats.TotalBaseRewardWeight = statedb.GetState(sfc.ContractAddress, epochPosition.TotalBaseRewardWeight()).Big()
@@ -515,7 +534,10 @@ func (b *EthAPIBackend) GetRewardWeights(ctx context.Context, stakerID idx.Stake
 		return nil, nil, nil
 	}
 	header := b.state.CurrentHeader()
-	statedb := b.svc.app.StateDB(header.Root)
+	statedb, err := b.svc.app.StateDB(header.Root)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// read reward weight from SFC contract
 	epoch := b.svc.engine.GetEpoch()
@@ -546,7 +568,10 @@ func (b *EthAPIBackend) GetStaker(ctx context.Context, stakerID idx.StakerID) (*
 // GetStakerID returns SFC staker's Id by address
 func (b *EthAPIBackend) GetStakerID(ctx context.Context, addr common.Address) (idx.StakerID, error) {
 	header := b.state.CurrentHeader()
-	statedb := b.svc.app.StateDB(header.Root)
+	statedb, err := b.svc.app.StateDB(header.Root)
+	if err != nil {
+		return 0, err
+	}
 
 	position := sfcpos.StakerID(addr)
 	stakerID256 := statedb.GetState(sfc.ContractAddress, position)
@@ -567,29 +592,34 @@ func (b *EthAPIBackend) GetStakers(ctx context.Context) ([]sfctype.SfcStakerAndI
 	return stakers, nil
 }
 
-// GetDelegatorsOf returns SFC delegators who delegated to a staker
-func (b *EthAPIBackend) GetDelegatorsOf(ctx context.Context, stakerID idx.StakerID) ([]sfctype.SfcDelegatorAndAddr, error) {
+// GetDelegationsOf returns SFC delegations who delegated to a staker
+func (b *EthAPIBackend) GetDelegationsOf(ctx context.Context, stakerID idx.StakerID) ([]sfctype.SfcDelegationAndID, error) {
 	b.svc.engineMu.RLock() // lock because of iteration
 	defer b.svc.engineMu.RUnlock()
 
-	delegators := make([]sfctype.SfcDelegatorAndAddr, 0, 200)
+	delegations := make([]sfctype.SfcDelegationAndID, 0, 200)
 	// TODO add additional DB index
-	b.svc.app.ForEachSfcDelegator(func(it sfctype.SfcDelegatorAndAddr) {
-		if it.Delegator.ToStakerID == stakerID {
-			delegators = append(delegators, it)
+	b.svc.app.ForEachSfcDelegation(func(it sfctype.SfcDelegationAndID) {
+		if it.ID.StakerID == stakerID {
+			delegations = append(delegations, it)
 		}
 	})
-	return delegators, nil
+	return delegations, nil
 }
 
-// GetDelegator returns SFC delegator info
-func (b *EthAPIBackend) GetDelegator(ctx context.Context, addr common.Address) (*sfctype.SfcDelegator, error) {
-	return b.svc.app.GetSfcDelegator(addr), nil
+// GetDelegation returns SFC delegation info
+func (b *EthAPIBackend) GetDelegation(ctx context.Context, id sfctype.DelegationID) (*sfctype.SfcDelegation, error) {
+	return b.svc.app.GetSfcDelegation(id), nil
 }
 
-// GetDelegatorClaimedRewards returns sum of claimed rewards in past, by this delegator
-func (b *EthAPIBackend) GetDelegatorClaimedRewards(ctx context.Context, addr common.Address) (*big.Int, error) {
-	return b.svc.app.GetDelegatorClaimedRewards(addr), nil
+// GetDelegationsByAddress returns SFC delegations info by address
+func (b *EthAPIBackend) GetDelegationsByAddress(ctx context.Context, addr common.Address) ([]sfctype.SfcDelegationAndID, error) {
+	return b.svc.app.GetSfcDelegationsByAddr(addr, 1000), nil
+}
+
+// GetDelegationClaimedRewards returns sum of claimed rewards in past, by this delegation
+func (b *EthAPIBackend) GetDelegationClaimedRewards(ctx context.Context, id sfctype.DelegationID) (*big.Int, error) {
+	return b.svc.app.GetDelegationClaimedRewards(id), nil
 }
 
 // GetStakerClaimedRewards returns sum of claimed rewards in past, by this staker
@@ -597,9 +627,9 @@ func (b *EthAPIBackend) GetStakerClaimedRewards(ctx context.Context, stakerID id
 	return b.svc.app.GetStakerClaimedRewards(stakerID), nil
 }
 
-// GetStakerDelegatorsClaimedRewards returns sum of claimed rewards in past, by this delegators of this staker
-func (b *EthAPIBackend) GetStakerDelegatorsClaimedRewards(ctx context.Context, stakerID idx.StakerID) (*big.Int, error) {
-	return b.svc.app.GetStakerDelegatorsClaimedRewards(stakerID), nil
+// GetStakerDelegationsClaimedRewards returns sum of claimed rewards in past, by this delegations of this staker
+func (b *EthAPIBackend) GetStakerDelegationsClaimedRewards(ctx context.Context, stakerID idx.StakerID) (*big.Int, error) {
+	return b.svc.app.GetStakerDelegationsClaimedRewards(stakerID), nil
 }
 
 // GetEventTime returns estimation of when event was created
@@ -618,8 +648,8 @@ func (b *EthAPIBackend) GetEventTime(ctx context.Context, id hash.Event, arrival
 	return t
 }
 
-// TtfReport for a range of blocks
-func (b *EthAPIBackend) TtfReport(ctx context.Context, untilBlock rpc.BlockNumber, maxBlocks idx.Block, mode string) (map[hash.Event]time.Duration, error) {
+// BlocksTTF for a range of blocks
+func (b *EthAPIBackend) BlocksTTF(ctx context.Context, untilBlock rpc.BlockNumber, maxBlocks idx.Block, mode string) (map[hash.Event]time.Duration, error) {
 	if !b.svc.config.DecisiveEventsIndex {
 		return nil, errors.New("decisive-events index is disabled (enable DecisiveEventsIndex and re-process the DAGs)")
 	}
@@ -672,7 +702,7 @@ func (b *EthAPIBackend) ValidatorTimeDrifts(ctx context.Context, epoch rpc.Block
 
 	processed := 0
 
-	err := b.ForEachEvent(ctx, epoch, func(event *inter.Event) bool {
+	err := b.ForEachEpochEvent(ctx, epoch, func(event *inter.Event) bool {
 		arrivalTime := b.GetEventTime(ctx, event.Hash(), true)
 		claimedTime := event.ClaimedTime
 
@@ -687,4 +717,8 @@ func (b *EthAPIBackend) ValidatorTimeDrifts(ctx context.Context, epoch rpc.Block
 		return processed < int(maxEvents)
 	})
 	return drifts, err
+}
+
+func (b *EthAPIBackend) CalcLogsBloom() bool {
+	return b.svc.config.RPCLogsBloom
 }

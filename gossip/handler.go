@@ -36,7 +36,7 @@ const (
 	txChanSize = 4096
 
 	// the maximum number of events in the ordering buffer
-	eventsBuffSize = 2048
+	eventsBuffSize = 1500
 )
 
 func errResp(code errCode, format string, v ...interface{}) error {
@@ -62,7 +62,6 @@ type dagNotifier interface {
 type ProtocolManager struct {
 	config *Config
 
-	//fastSync uint32 // Flag whether fast sync is enabled (gets disabled if we already have events)
 	synced uint32 // Flag whether we're considered synchronised (enables transaction processing, events broadcasting)
 
 	txpool   txPool
@@ -83,6 +82,8 @@ type ProtocolManager struct {
 	engine   Consensus
 	engineMu *sync.RWMutex
 
+	isMigration func() bool
+
 	notifier         dagNotifier
 	emittedEventsCh  chan *inter.Event
 	emittedEventsSub notify.Subscription
@@ -99,7 +100,8 @@ type ProtocolManager struct {
 
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
-	wg sync.WaitGroup
+	loopsWg sync.WaitGroup
+	wg      sync.WaitGroup
 
 	logger.Instance
 }
@@ -115,6 +117,7 @@ func NewProtocolManager(
 	s *Store,
 	engine Consensus,
 	serverPool *serverPool,
+	isMigration func() bool,
 ) (
 	*ProtocolManager,
 	error,
@@ -133,6 +136,7 @@ func NewProtocolManager(
 		noMorePeers: make(chan struct{}),
 		txsyncCh:    make(chan *txsync),
 		quitSync:    make(chan struct{}),
+		isMigration: isMigration,
 
 		Instance: logger.MakeInstance(),
 	}
@@ -326,6 +330,8 @@ func (pm *ProtocolManager) Start(maxPeers int) {
 	// broadcast transactions
 	pm.txsCh = make(chan evmcore.NewTxsNotify, txChanSize)
 	pm.txsSub = pm.txpool.SubscribeNewTxsNotify(pm.txsCh)
+
+	pm.loopsWg.Add(1)
 	go pm.txBroadcastLoop()
 
 	if pm.notifier != nil {
@@ -338,19 +344,24 @@ func (pm *ProtocolManager) Start(maxPeers int) {
 		// epoch changes
 		pm.newEpochsCh = make(chan idx.Epoch, 4)
 		pm.newEpochsSub = pm.notifier.SubscribeNewEpoch(pm.newEpochsCh)
-	}
 
-	go pm.emittedBroadcastLoop()
-	go pm.progressBroadcastLoop()
-	go pm.onNewEpochLoop()
+		pm.loopsWg.Add(3)
+		go pm.emittedBroadcastLoop()
+		go pm.progressBroadcastLoop()
+		go pm.onNewEpochLoop()
+	}
 
 	// start sync handlers
 	go pm.syncer()
 	go pm.txsyncLoop()
+	pm.fetcher.Start()
 }
 
 func (pm *ProtocolManager) Stop() {
 	log.Info("Stopping Fantom protocol")
+
+	pm.downloader.Terminate()
+	pm.fetcher.Stop()
 
 	pm.txsSub.Unsubscribe() // quits txBroadcastLoop
 	if pm.notifier != nil {
@@ -358,12 +369,12 @@ func (pm *ProtocolManager) Stop() {
 		pm.newPacksSub.Unsubscribe()      // quits progressBroadcastLoop
 		pm.newEpochsSub.Unsubscribe()     // quits onNewEpochLoop
 	}
+	// Wait for the subscription loops to come down.
+	pm.loopsWg.Wait()
 
 	// Quit the sync loop.
 	// After this send has completed, no new peers will be accepted.
 	pm.noMorePeers <- struct{}{}
-
-	// Quit fetcher, txsyncLoop.
 	close(pm.quitSync)
 
 	// Disconnect existing sessions.
@@ -372,7 +383,7 @@ func (pm *ProtocolManager) Stop() {
 	// will exit when they try to register.
 	pm.peers.Close()
 
-	// Wait for all peer handler goroutines and the loops to come down.
+	// Wait for all peer handler goroutines to come down.
 	pm.wg.Wait()
 
 	log.Info("Fantom protocol stopped")
@@ -427,7 +438,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	//}
 	// Register the peer locally
 	if err := pm.peers.Register(p); err != nil {
-		p.Log().Error("Peer registration failed", "err", err)
+		p.Log().Warn("Peer registration failed", "err", err)
 		return err
 	}
 	defer pm.removePeer(p.id)
@@ -468,6 +479,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return errResp(ErrExtraStatusMsg, "uncontrolled status message")
 
 	case msg.Code == ProgressMsg:
+		if pm.isMigration() {
+			break
+		}
 		var progress PeerProgress
 		if err := msg.Decode(&progress); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
@@ -491,6 +505,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 	case msg.Code == NewEventHashesMsg:
+		if pm.isMigration() {
+			break
+		}
 		if pm.fetcher.Overloaded() {
 			break
 		}
@@ -505,6 +522,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := checkLenLimits(len(announces), announces); err != nil {
 			return err
 		}
+		if len(announces) > 0 && announces[0].Lamport() > pm.store.GetHighestLamport()+eventsBuffSize {
+			break
+		}
 		// Mark the hashes as present at the remote node
 		for _, id := range announces {
 			p.MarkEvent(id)
@@ -513,7 +533,15 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		_ = pm.fetcher.Notify(p.id, announces, time.Now(), p.RequestEvents)
 
 	case msg.Code == EventsMsg:
-		if pm.fetcher.Overloaded() {
+		if pm.isMigration() {
+			break
+		}
+		slept := time.Duration(0)
+		for pm.fetcher.Overloaded() && slept < time.Second {
+			time.Sleep(time.Millisecond * 5)
+			slept += time.Millisecond * 5
+		}
+		if slept >= time.Second {
 			break
 		}
 		var events []*inter.Event
@@ -523,6 +551,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := checkLenLimits(len(events), events); err != nil {
 			return err
 		}
+		if len(events) > 0 && events[0].Lamport > pm.store.GetHighestLamport()+eventsBuffSize {
+			break
+		}
 		// Mark the hashes as present at the remote node
 		for _, e := range events {
 			p.MarkEvent(e.Hash())
@@ -530,6 +561,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		_ = pm.fetcher.Enqueue(p.id, events, time.Now(), p.RequestEvents)
 
 	case msg.Code == EvmTxMsg:
+		if pm.isMigration() {
+			break
+		}
 		// Transactions arrived, make sure we have a valid and fresh graph to handle them
 		if atomic.LoadUint32(&pm.synced) == 0 {
 			break
@@ -645,6 +679,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if peerDwnlr == nil {
 			break
 		}
+		if pm.isMigration() {
+			break
+		}
 
 		var infos packInfosData
 		if err := msg.Decode(&infos); err != nil {
@@ -671,6 +708,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 	case msg.Code == PackMsg:
 		if peerDwnlr == nil {
+			break
+		}
+		if pm.isMigration() {
 			break
 		}
 
@@ -788,12 +828,13 @@ func (pm *ProtocolManager) BroadcastTxs(txs types.Transactions) {
 
 // Mined broadcast loop
 func (pm *ProtocolManager) emittedBroadcastLoop() {
+	defer pm.loopsWg.Done()
 	for {
 		select {
 		case emitted := <-pm.emittedEventsCh:
 			pm.BroadcastEvent(emitted, 0)
 		// Err() channel will be closed when unsubscribing.
-		case <-pm.txsSub.Err():
+		case <-pm.emittedEventsSub.Err():
 			return
 		}
 	}
@@ -801,6 +842,7 @@ func (pm *ProtocolManager) emittedBroadcastLoop() {
 
 // Progress broadcast loop
 func (pm *ProtocolManager) progressBroadcastLoop() {
+	defer pm.loopsWg.Done()
 	// automatically stops if unsubscribe
 	prevProgress := pm.myProgress()
 	for {
@@ -811,18 +853,19 @@ func (pm *ProtocolManager) progressBroadcastLoop() {
 			for _, peer := range pm.peers.List() {
 				err := peer.SendProgress(prevProgress)
 				if err != nil {
-					log.Error("Failed to send progress status", "peer", peer.id)
+					log.Warn("Failed to send progress status", "peer", peer.id, "err", err)
 				}
 			}
 			prevProgress = pm.myProgress()
 		// Err() channel will be closed when unsubscribing.
-		case <-pm.txsSub.Err():
+		case <-pm.newPacksSub.Err():
 			return
 		}
 	}
 }
 
 func (pm *ProtocolManager) onNewEpochLoop() {
+	defer pm.loopsWg.Done()
 	for {
 		select {
 		case myEpoch := <-pm.newEpochsCh:
@@ -848,13 +891,14 @@ func (pm *ProtocolManager) onNewEpochLoop() {
 			pm.buffer.Clear()
 			pm.downloader.OnNewEpoch(myEpoch, peerEpoch)
 		// Err() channel will be closed when unsubscribing.
-		case <-pm.txsSub.Err():
+		case <-pm.newEpochsSub.Err():
 			return
 		}
 	}
 }
 
 func (pm *ProtocolManager) txBroadcastLoop() {
+	defer pm.loopsWg.Done()
 	for {
 		select {
 		case notify := <-pm.txsCh:
